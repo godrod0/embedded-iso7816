@@ -1,16 +1,23 @@
 /*
- * iso7816_hal_stm32u5.h — port STM32U5 de l'API iso7816_hal_t.
+ * iso7816_hal_stm32u5.h — port STM32U5 de iso7816_hal_t.
+ *
+ * Basé sur la bibliothèque SMARTCARD de la HAL STM32 (stm32u5xx_hal_smartcard.h) :
+ * le USART en mode smartcard pilote la ligne I/O (broche TX, open-drain) et
+ * génère l'horloge carte (broche CK) ; la trame caractère (start + 8 bits +
+ * parité paire), le NACK et le guard time sont gérés par le périphérique.
  *
  * Brochage type (à adapter dans la config) :
  *   C1 VCC : sélection de classe par 3 load-switches (EN_5V / EN_3V / EN_1V8)
- *            pilotés en GPIO (ou PMIC externe via callback)
+ *            pilotés en GPIO
  *   C2 RST : GPIO push-pull
- *   C3 CLK : TIMx CHx en PWM 50 % (fréquence = f_TIM / ((PSC+1)(ARR+1)))
+ *   C3 CLK : CK du USART (AF) ; basculable en GPIO pour le clock stop (cl. 6.3.2)
  *   C5 GND : masse
- *   C7 I/O : GPIO open-drain + pull-up externe 20 kΩ (ISO7816_PORT_IO_PULLUP_OHM) vers VCC (cl. 5.2.5) ;
- *            en réception : entrée flottante
+ *   C7 I/O : TX du USART en mode smartcard (open-drain + pull-up externe
+ *            ISO7816_PORT_IO_PULLUP_OHM vers VCC, cl. 5.2.5)
  *
- * Base de temps µs : TIMy libre cadencé à 1 MHz (ISO7816_PORT_TIME_BASE_HZ).
+ * Base de temps µs : TIM libre cadencé à 1 MHz (ISO7816_PORT_TIME_BASE_HZ).
+ *
+ * Nécessite stm32u5xx_hal_smartcard.c dans le projet (HAL STM32U5).
  */
 #pragma once
 
@@ -33,17 +40,16 @@ typedef struct {
 
     GPIO_TypeDef *gpio_rst;    uint16_t pin_rst;
 
-    TIM_HandleTypeDef *h_clk;            /* PWM sur un canal (ex. TIM2 CH1) */
-    uint32_t           clk_channel;      /* HAL_TIM_ACTIVE_CHANNEL_x */
-    GPIO_TypeDef      *gpio_clk;         /* pour forcer H/L à l'arrêt */
-    uint16_t           pin_clk;
+    /* USART en mode smartcard : C7 I/O = TX (AF open-drain), C3 CLK = CK (AF) */
+    USART_TypeDef *usart;              /* instance (ex. USART1) */
+    GPIO_TypeDef  *gpio_tx;  uint16_t pin_tx;
+    GPIO_TypeDef  *gpio_ck;  uint16_t pin_ck;
+    uint8_t        gpio_af;            /* alternate function commune TX/CK */
 
-    GPIO_TypeDef *gpio_io;     uint16_t pin_io;
-
-    TIM_HandleTypeDef *h_us;             /* base de temps 1 MHz (ex. TIM3) */
+    TIM_HandleTypeDef *h_us;           /* base de temps 1 MHz (ex. TIM3) */
 } iso7816_hal_stm32u5_config_t;
 
-/* Remplit *hal avec les callbacks STM32U5 ; ctx = config interne alloué en statique. */
+/* Remplit *hal avec les callbacks STM32U5 (smartcard) ; ctx = config interne alloué en statique. */
 const iso7816_hal_t *iso7816_hal_stm32u5(const iso7816_hal_stm32u5_config_t *cfg);
 
 #ifdef __cplusplus

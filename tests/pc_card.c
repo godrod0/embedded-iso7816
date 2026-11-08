@@ -1,6 +1,11 @@
 /*
- * pc_card.c — port PC : HAL mock (ligne I/O virtuelle, horloge virtuelle)
- * + carte simulée (ATR, PPS, T=0, T=1) pour tests unitaires/fonctionnels.
+ * pc_card.c — port PC : HAL mock + carte simulée (ATR, PPS, T=0, T=1).
+ *
+ * Le mock émule un périphérique smartcard au niveau octet (comme le port
+ * STM32U5 avec HAL_SMARTCARD) : tx_byte/rx_byte transfèrent une trame
+ * complète (10 etu : start + 8 bits + parité) sur une ligne virtuelle à
+ * temps simulé. Une parité fausse côté carte fait émettre le NACK par le
+ * "périphérique" de l'IFD (compté dans ifd_err_count, cl. 7.3).
  */
 #include "pc_card.h"
 
@@ -10,13 +15,11 @@
 #include "iso7816/iso7816_char.h"
 #include "iso7816/iso7816_t1.h"
 
-#define EDGES_MAX           160
 #define TXQ_MAX             4096
 #define RXLOG_MAX           4096
 #define CMD_SLOTS           8    /* handlers de commandes enregistrables */
 #define APDU_BUF_MAX        700
 #define T0_DATA_MAX         256
-#define MOCK_ERR_SIGNAL_ETU 2U   /* durée du signal d'erreur émis par la carte (1..2 etu, cl. 7.3) */
 #define PC_CARD_DEFAULT_CLK_HZ 1000000U /* horloge virtuelle du mock si aucune base de temps */
 
 typedef struct {
@@ -38,23 +41,22 @@ struct pc_card {
     bool vcc_on;
     iso7816_class_t cls;
     bool rst_high;
-    bool ifd_tx;
+    bool ifd_drive;             /* l'IFD force la ligne (io_drive) */
     bool ifd_level;
 
-    /* décodage des caractères émis par l'IFD */
-    struct { uint32_t time_us; bool level; } edges[EDGES_MAX];
-    int n_edges;
-    uint32_t ifd_err_count;
-
-    /* émission carte */
+    /* émission carte (file txq) */
     uint8_t  txq[TXQ_MAX];
     size_t   qhead, qcount;
-    bool     cur_active, cur_bad;
+    uint32_t next_allowed;      /* instant de départ du prochain caractère carte */
+    bool     cur_active;        /* la carte est en train d'émettre un caractère */
     uint32_t cur_start;
     uint8_t  cur_byte;
-    uint32_t next_allowed;
-    bool     err_active;
-    uint32_t err_start;
+    bool     cur_bad;           /* parité fausse sur ce caractère */
+
+    /* réception IFD */
+    uint8_t  rxlog[RXLOG_MAX];  /* octets reçus par la carte */
+    size_t   rxlog_len;
+    uint32_t ifd_err_count;     /* NACK émis par le "périphérique" de l'IFD */
 
     /* config carte simulée */
     uint8_t  ts;
@@ -68,8 +70,6 @@ struct pc_card {
 
     /* état protocole carte */
     int      phase;                 /* 1 = session active (reset reçu) */
-    uint8_t  rxlog[RXLOG_MAX];
-    size_t   rxlog_len;
     bool     in_pps;
     uint8_t  pps_buf[ISO7816_PPS_RESP_MAX];
     size_t   pps_len, pps_expected;
@@ -83,7 +83,7 @@ struct pc_card {
     size_t   apdu_len;
     /* T=1 */
     int      t1_state;
-    uint8_t  t1_nad, t1_pcb, t1_len, t1_lrc;
+    uint8_t  t1_nad, t1_pcb, t1_len;
     uint8_t  t1_inf[ISO7816_T1_INF_MAX];
     uint8_t  t1_inf_len;
     uint8_t  t1_ns;
@@ -115,31 +115,22 @@ static uint32_t card_cycles_us(pc_card_t *card, uint32_t cycles)
 
 /* ---------- modèle de ligne ---------- */
 
+/* Démarre l'émission du prochain caractère carte si l'instant est venu. */
 static void card_pump(pc_card_t *card, uint32_t time_us)
 {
-    uint32_t etu = card_etu_us(card);
-    if (card->err_active && time_us >= card->err_start + MOCK_ERR_SIGNAL_ETU * etu) card->err_active = false;
-    if (card->cur_active && time_us >= card->cur_start + ISO7816_CHAR_MOMENT_TOTAL * etu) {
-        card->cur_active = false;
-        card->next_allowed = card->cur_start + ISO7816_CHAR_GT_ETU * etu;
-    }
     if (!card->cur_active && card->qcount > 0 && time_us >= card->next_allowed) {
         card->cur_bad = card->corrupt_next;
         card->corrupt_next = false;
         card->cur_byte = card->txq[card->qhead];
-        card->qhead = (card->qhead + 1) % TXQ_MAX;
-        card->qcount--;
         card->cur_start = time_us;
         card->cur_active = true;
-        card->next_allowed = time_us + ISO7816_CHAR_GT_ETU * etu;
     }
 }
 
+/* Niveau de la ligne à l'instant t (côté carte en émission, sinon pull-up H). */
 static bool card_line(pc_card_t *card, uint32_t time_us)
 {
     uint32_t etu = card_etu_us(card);
-    if (card->err_active && time_us >= card->err_start &&
-        time_us < card->err_start + MOCK_ERR_SIGNAL_ETU * etu) return false;
     if (!card->cur_active || time_us < card->cur_start) return true;   /* pull-up : H */
     uint32_t moment = (time_us - card->cur_start) / etu + 1;            /* moment 1..10 */
     if (moment > ISO7816_CHAR_MOMENT_TOTAL) return true;
@@ -348,51 +339,7 @@ static void card_on_byte(pc_card_t *card, uint8_t byte)
     else card_t0_byte(card, byte);
 }
 
-/* Décode le caractère que l'IFD vient d'émettre (fronts enregistrés). */
-static void card_decode_ifd_char(pc_card_t *card)
-{
-    if (card->n_edges == 0) return;
-    int i0 = -1;
-    for (int i = 0; i < card->n_edges; i++) {
-        if (!card->edges[i].level) { i0 = i; break; }
-    }
-    if (i0 < 0) return;
-    uint32_t t_start = card->edges[i0].time_us;
-    uint32_t etu = card_etu_us(card);
-
-    uint8_t byte = 0;
-    unsigned ones = 0;
-    for (int moment = (int)ISO7816_CHAR_MOMENT_FIRST_DATA;
-         moment <= (int)ISO7816_CHAR_MOMENT_TOTAL; moment++) {
-        uint32_t sample_us = t_start + (uint32_t)((2 * moment - 1) * etu / ISO7816_CHAR_HALF_ETU_DIV);
-        bool level = true;
-        for (int i = 0; i < card->n_edges; i++) {
-            if (card->edges[i].time_us <= sample_us) level = card->edges[i].level;
-            else break;
-        }
-        bool value = card_inverse(card) ? !level : level;
-        ones += value ? 1U : 0U;
-        if (moment <= (int)ISO7816_CHAR_MOMENT_LAST_DATA) {
-            int bit = card_inverse(card) ? ((int)ISO7816_CHAR_MOMENT_LAST_DATA - moment)
-                                         : (moment - (int)ISO7816_CHAR_MOMENT_FIRST_DATA);
-            if (value) byte |= (uint8_t)(1U << bit);
-        }
-    }
-    /* la carte attend le GT après le leading edge du caractère de l'IFD */
-    if (t_start + ISO7816_CHAR_GT_ETU * etu > card->next_allowed) {
-        card->next_allowed = t_start + ISO7816_CHAR_GT_ETU * etu;
-    }
-
-    if ((ones & 1U) != 0U) {
-        /* parité fausse côté IFD : la carte émet le signal d'erreur à 10,5 etu */
-        card->err_active = true;
-        card->err_start = t_start + (ISO7816_CHAR_ERR_SIGNAL_HALF_ETU * etu / ISO7816_CHAR_HALF_ETU_DIV);
-        return;
-    }
-    card_on_byte(card, byte);
-}
-
-/* ---------- callbacks HAL ---------- */
+/* ---------- callbacks HAL (émulation périphérique smartcard, niveau octet) ---------- */
 
 static int m_init(void *ctx) { (void)ctx; return 0; }
 static void m_deinit(void *ctx) { (void)ctx; }
@@ -402,7 +349,6 @@ static void m_vcc_on(void *ctx, iso7816_class_t cls)
     pc_card_t *card = ctx;
     card->vcc_on = true;
     card->cls = cls;
-    card->n_edges = 0;
 }
 
 static void m_vcc_off(void *ctx)
@@ -418,11 +364,9 @@ static void m_rst(void *ctx, bool high)
     if (high && !card->rst_high && card->vcc_on) {
         /* cold/warm reset : la carte va répondre à l'ATR */
         card->phase = 1;
-        card->n_edges = 0;
         card->rxlog_len = 0;
         card->qcount = 0;
         card->cur_active = false;
-        card->err_active = false;
         card->in_pps = false;
         card->t0_hdr_len = 0;
         card->t0_await_data = false;
@@ -450,47 +394,61 @@ static uint32_t m_clk_start(void *ctx, uint32_t hz)
 
 static void m_clk_stop(void *ctx, bool keep_high) { (void)ctx; (void)keep_high; }
 
-static void m_io_tx(void *ctx, bool high)
+/* Émission d'une trame complète par l'IFD (10 etu + GT). */
+static iso7816_status_t m_tx_byte(void *ctx, uint8_t byte)
 {
     pc_card_t *card = ctx;
-    card->ifd_tx = true;
-    card->ifd_level = high;
-    if (card->n_edges == 0 || card->edges[card->n_edges - 1].level != high) {
-        if (card->n_edges < EDGES_MAX) {
-            card->edges[card->n_edges].time_us = card->now_us;
-            card->edges[card->n_edges].level = high;
-            card->n_edges++;
-        }
-    }
+    uint32_t etu = card_etu_us(card);
+    card_on_byte(card, byte);
+    /* la trame occupe la ligne : 10 etu + guard time */
+    card->now_us += (ISO7816_CHAR_MOMENT_TOTAL + ISO7816_CHAR_GT_ETU) * etu;
+    card_pump(card, card->now_us);
+    return ISO7816_OK;
 }
 
-static void m_io_rx(void *ctx)
+/* Réception d'une trame complète. WT si la carte est muette ;
+   parité fausse -> le "périphérique" de l'IFD émet le NACK (compté). */
+static iso7816_status_t m_rx_byte(void *ctx, uint8_t *byte, uint32_t timeout_us)
 {
     pc_card_t *card = ctx;
-    card->ifd_tx = false;
-    if (card->n_edges >= 1) {
-        /* durée entre le premier front à L et la libération de la ligne :
-           ~10 etu = caractère, 1..2 etu = signal d'erreur de l'IFD (cl. 7.3) */
-        int i0 = -1;
-        for (int i = 0; i < card->n_edges; i++) {
-            if (!card->edges[i].level) { i0 = i; break; }
+    uint32_t etu = card_etu_us(card);
+    uint32_t deadline = card->now_us + timeout_us;
+    for (;;) {
+        card_pump(card, card->now_us);
+        if (card->cur_active && card->now_us >= card->cur_start + ISO7816_CHAR_MOMENT_TOTAL * etu) {
+            /* trame reçue en totalité */
+            uint8_t received = card->cur_byte;
+            bool bad = card->cur_bad;
+            card->qhead = (card->qhead + 1) % TXQ_MAX;
+            card->qcount--;
+            card->next_allowed = card->cur_start + ISO7816_CHAR_GT_ETU * etu;
+            card->cur_active = false;
+            card->now_us = card->cur_start + ISO7816_CHAR_MOMENT_TOTAL * etu;
+            if (bad) {
+                card->ifd_err_count++;  /* NACK émis automatiquement (cl. 7.3) */
+                return ISO7816_CHAR_PARITY;
+            }
+            *byte = received;
+            return ISO7816_OK;
         }
-        uint32_t dur = (i0 >= 0) ? (card->now_us - card->edges[i0].time_us) : 0;
-        if (dur < 3 * card_etu_us(card)) {
-            card->ifd_err_count++;
-        } else {
-            card_decode_ifd_char(card);
-        }
+        if (card->now_us >= deadline) return ISO7816_CHAR_WT;
+        card->now_us++;
     }
-    card->n_edges = 0;
 }
 
 static bool m_io_read(void *ctx)
 {
     pc_card_t *card = ctx;
     card_pump(card, card->now_us);
-    if (card->ifd_tx) return card->ifd_level;
+    if (card->ifd_drive) return card->ifd_level;
     return card_line(card, card->now_us);
+}
+
+static void m_io_drive(void *ctx, bool high)
+{
+    pc_card_t *card = ctx;
+    card->ifd_drive = true;
+    card->ifd_level = high;
 }
 
 static uint32_t m_micros(void *ctx)
@@ -524,9 +482,10 @@ pc_card_t *pc_card_create(void)
     card->hal.rst_drive = m_rst;
     card->hal.clk_start = m_clk_start;
     card->hal.clk_stop = m_clk_stop;
-    card->hal.io_tx = m_io_tx;
-    card->hal.io_rx = m_io_rx;
+    card->hal.tx_byte = m_tx_byte;
+    card->hal.rx_byte = m_rx_byte;
     card->hal.io_read = m_io_read;
+    card->hal.io_drive = m_io_drive;
     card->hal.micros = m_micros;
     card->hal.delay_us = m_delay_us;
     card->ts = ISO7816_ATR_TS_DIRECT;
