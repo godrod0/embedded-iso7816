@@ -17,7 +17,7 @@ static const uint8_t ATR_NOCLKSTOP[] = { 0x80, 0x3F, 0x01, 0x00, 0xBE };
 static void h_ok(pc_card_t *c, const uint8_t *apdu, size_t len)
 {
     (void)apdu; (void)len;
-    pc_card_queue_sw(c, 0x9000);
+    pc_card_queue_sw(c, ISO7816_SW_OK);
 }
 
 int main(void)
@@ -27,7 +27,7 @@ int main(void)
         pc_card_t *card = pc_card_create();
         pc_card_set_silent(card, true);
         iso7816_t dev;
-        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = 1000000 };
+        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = ISO7816_CLK_RESET_MIN_HZ };
         CHECK_EQ(iso7816_init(&dev, pc_card_hal(card), &cfg), ISO7816_OK);
         pc_card_attach(card, &dev);
         CHECK_EQ(iso7816_activate(&dev, ISO7816_CLASS_A), ISO7816_DEV_NO_ANSWER);
@@ -38,10 +38,10 @@ int main(void)
     /* --- sélection de classe : on demande A, la carte n'accepte que B --- */
     {
         pc_card_t *card = pc_card_create();
-        pc_card_set_atr(card, 0x3B, ATR_CLASS_B, sizeof(ATR_CLASS_B));
+        pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_CLASS_B, sizeof(ATR_CLASS_B));
         pc_card_set_protocol(card, 0);
         iso7816_t dev;
-        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = 1000000 };
+        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = ISO7816_CLK_RESET_MIN_HZ };
         CHECK_EQ(iso7816_init(&dev, pc_card_hal(card), &cfg), ISO7816_OK);
         pc_card_attach(card, &dev);
         CHECK_EQ(iso7816_activate(&dev, ISO7816_CLASS_A), ISO7816_OK);
@@ -54,11 +54,11 @@ int main(void)
     /* --- warm reset --- */
     {
         pc_card_t *card = pc_card_create();
-        pc_card_set_atr(card, 0x3B, ATR_T0, sizeof(ATR_T0));
+        pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_T0, sizeof(ATR_T0));
         pc_card_set_protocol(card, 0);
         pc_card_set_cmd_handler(card, 0xA4, false, h_ok);
         iso7816_t dev;
-        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = 1000000 };
+        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = ISO7816_CLK_RESET_MIN_HZ };
         CHECK_EQ(iso7816_init(&dev, pc_card_hal(card), &cfg), ISO7816_OK);
         pc_card_attach(card, &dev);
         CHECK_EQ(iso7816_activate(&dev, ISO7816_CLASS_A), ISO7816_OK);
@@ -69,7 +69,7 @@ int main(void)
         uint16_t sw;
         uint8_t cmd[] = { 0x00, 0xA4, 0x00, 0x00 };
         CHECK_EQ(iso7816_exchange(&dev, cmd, sizeof(cmd), resp, sizeof(resp), &rlen, &sw), ISO7816_OK);
-        CHECK_EQ(sw, 0x9000);
+        CHECK_EQ(sw, ISO7816_SW_OK);
         CHECK_EQ(iso7816_deactivate(&dev), ISO7816_OK);
         pc_card_destroy(card);
     }
@@ -77,10 +77,10 @@ int main(void)
     /* --- clock stop supporté (X=3) --- */
     {
         pc_card_t *card = pc_card_create();
-        pc_card_set_atr(card, 0x3B, ATR_CLKSTOP, sizeof(ATR_CLKSTOP));
+        pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_CLKSTOP, sizeof(ATR_CLKSTOP));
         pc_card_set_protocol(card, 0);
         iso7816_t dev;
-        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = 1000000 };
+        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = ISO7816_CLK_RESET_MIN_HZ };
         CHECK_EQ(iso7816_init(&dev, pc_card_hal(card), &cfg), ISO7816_OK);
         pc_card_attach(card, &dev);
         CHECK_EQ(iso7816_activate(&dev, ISO7816_CLASS_A), ISO7816_OK);
@@ -96,10 +96,10 @@ int main(void)
     /* --- clock stop non supporté (X=0) --- */
     {
         pc_card_t *card = pc_card_create();
-        pc_card_set_atr(card, 0x3B, ATR_NOCLKSTOP, sizeof(ATR_NOCLKSTOP));
+        pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_NOCLKSTOP, sizeof(ATR_NOCLKSTOP));
         pc_card_set_protocol(card, 0);
         iso7816_t dev;
-        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = 1000000 };
+        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = ISO7816_CLK_RESET_MIN_HZ };
         CHECK_EQ(iso7816_init(&dev, pc_card_hal(card), &cfg), ISO7816_OK);
         pc_card_attach(card, &dev);
         CHECK_EQ(iso7816_activate(&dev, ISO7816_CLASS_A), ISO7816_OK);

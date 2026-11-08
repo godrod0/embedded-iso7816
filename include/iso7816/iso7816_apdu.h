@@ -3,6 +3,8 @@
  */
 #pragma once
 
+#include "iso7816_const.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -35,7 +37,7 @@ iso7816_status_t iso7816_apdu_decode(const uint8_t *buf, size_t len,
                                      iso7816_apdu_cmd_t *out);
 
 /* Encode un command APDU. Renvoie la taille écrite, ou 0 si cap trop petit. */
-size_t iso7816_apdu_encode(const iso7816_apdu_cmd_t *c, uint8_t *out, size_t cap);
+size_t iso7816_apdu_encode(const iso7816_apdu_cmd_t *cmd, uint8_t *out, size_t cap);
 
 #ifdef __cplusplus
 }

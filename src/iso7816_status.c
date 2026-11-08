@@ -1,8 +1,8 @@
 #include "iso7816/iso7816_status.h"
 
-const char *iso7816_strstatus(iso7816_status_t s)
+const char *iso7816_strstatus(iso7816_status_t stat)
 {
-    switch (s) {
+    switch (stat) {
     case ISO7816_OK:               return "OK";
     case ISO7816_GEN_HAL:          return "GEN_HAL: erreur du port materiel";
     case ISO7816_GEN_PARAM:        return "GEN_PARAM: argument invalide";

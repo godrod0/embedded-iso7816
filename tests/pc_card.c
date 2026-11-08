@@ -10,9 +10,14 @@
 #include "iso7816/iso7816_char.h"
 #include "iso7816/iso7816_t1.h"
 
-#define EDGES_MAX 160
-#define TXQ_MAX   4096
-#define RXLOG_MAX 4096
+#define EDGES_MAX           160
+#define TXQ_MAX             4096
+#define RXLOG_MAX           4096
+#define CMD_SLOTS           8    /* handlers de commandes enregistrables */
+#define APDU_BUF_MAX        700
+#define T0_DATA_MAX         256
+#define MOCK_ERR_SIGNAL_ETU 2U   /* durée du signal d'erreur émis par la carte (1..2 etu, cl. 7.3) */
+#define PC_CARD_DEFAULT_CLK_HZ 1000000U /* horloge virtuelle du mock si aucune base de temps */
 
 typedef struct {
     uint8_t ins;
@@ -37,7 +42,7 @@ struct pc_card {
     bool ifd_level;
 
     /* décodage des caractères émis par l'IFD */
-    struct { uint32_t t; bool lvl; } edges[EDGES_MAX];
+    struct { uint32_t time_us; bool level; } edges[EDGES_MAX];
     int n_edges;
     uint32_t ifd_err_count;
 
@@ -58,7 +63,7 @@ struct pc_card {
     bool     silent;
     uint8_t  protocol;
     bool     pps_accept;
-    cmd_entry_t cmds[8];
+    cmd_entry_t cmds[CMD_SLOTS];
     bool     corrupt_next;
 
     /* état protocole carte */
@@ -66,15 +71,15 @@ struct pc_card {
     uint8_t  rxlog[RXLOG_MAX];
     size_t   rxlog_len;
     bool     in_pps;
-    uint8_t  pps_buf[8];
+    uint8_t  pps_buf[ISO7816_PPS_RESP_MAX];
     size_t   pps_len, pps_expected;
-    uint8_t  t0_hdr[5];
+    uint8_t  t0_hdr[ISO7816_T0_HEADER_LEN];
     size_t   t0_hdr_len;
     bool     t0_await_data;
     size_t   t0_data_need, t0_data_len;
-    uint8_t  t0_data[256];
+    uint8_t  t0_data[T0_DATA_MAX];
     cmd_entry_t *cur_cmd;
-    uint8_t  apdu[700];
+    uint8_t  apdu[APDU_BUF_MAX];
     size_t   apdu_len;
     /* T=1 */
     int      t1_state;
@@ -83,288 +88,308 @@ struct pc_card {
     uint8_t  t1_inf_len;
     uint8_t  t1_ns;
     /* blocs chaînés en attente (la carte attend l'ack R entre deux I-blocs M=1) */
-    uint8_t  pend_blk[8][3 + ISO7816_T1_INF_MAX + 1];
-    uint8_t  pend_len[8];
+    uint8_t  pend_blk[CMD_SLOTS][ISO7816_T1_HEADER_LEN + ISO7816_T1_INF_MAX + 1];
+    uint8_t  pend_len[CMD_SLOTS];
     int      pend_count, pend_head;
 };
 
 /* ---------- helpers temps/etu ---------- */
 
-static uint32_t c_etu_us(pc_card_t *c)
+static uint32_t card_etu_us(pc_card_t *card)
 {
-    if (c->dev) return iso7816_etu_us(c->dev);
-    uint32_t f = c->clk_hz ? c->clk_hz : 1000000U;
-    return (uint32_t)(372ULL * 1000000ULL / f);
+    if (card->dev) return iso7816_etu_us(card->dev);
+    uint32_t clk_hz = card->clk_hz ? card->clk_hz : PC_CARD_DEFAULT_CLK_HZ;
+    return (uint32_t)((uint64_t)ISO7816_F_DEFAULT * ISO7816_US_PER_SECOND / clk_hz);
 }
 
-static bool c_inverse(pc_card_t *c)
+static bool card_inverse(pc_card_t *card)
 {
-    return c->dev ? c->dev->inverse : false;
+    return card->dev ? card->dev->inverse : false;
 }
 
-static uint32_t c_cycles_us(pc_card_t *c, uint32_t cycles)
+static uint32_t card_cycles_us(pc_card_t *card, uint32_t cycles)
 {
-    uint32_t f = c->dev ? c->dev->f_hz : (c->clk_hz ? c->clk_hz : 1000000U);
-    return (uint32_t)((uint64_t)cycles * 1000000ULL / f);
+    uint32_t clk_hz = card->dev ? card->dev->f_hz : (card->clk_hz ? card->clk_hz : PC_CARD_DEFAULT_CLK_HZ);
+    return (uint32_t)((uint64_t)cycles * ISO7816_US_PER_SECOND / clk_hz);
 }
 
 /* ---------- modèle de ligne ---------- */
 
-static void c_pump(pc_card_t *c, uint32_t t)
+static void card_pump(pc_card_t *card, uint32_t time_us)
 {
-    uint32_t etu = c_etu_us(c);
-    if (c->err_active && t >= c->err_start + 2 * etu) c->err_active = false;
-    if (c->cur_active && t >= c->cur_start + 10 * etu) {
-        c->cur_active = false;
-        c->next_allowed = c->cur_start + 12 * etu;
+    uint32_t etu = card_etu_us(card);
+    if (card->err_active && time_us >= card->err_start + MOCK_ERR_SIGNAL_ETU * etu) card->err_active = false;
+    if (card->cur_active && time_us >= card->cur_start + ISO7816_CHAR_MOMENT_TOTAL * etu) {
+        card->cur_active = false;
+        card->next_allowed = card->cur_start + ISO7816_CHAR_GT_ETU * etu;
     }
-    if (!c->cur_active && c->qcount > 0 && t >= c->next_allowed) {
-        c->cur_bad = c->corrupt_next;
-        c->corrupt_next = false;
-        c->cur_byte = c->txq[c->qhead];
-        c->qhead = (c->qhead + 1) % TXQ_MAX;
-        c->qcount--;
-        c->cur_start = t;
-        c->cur_active = true;
-        c->next_allowed = t + 12 * etu;
+    if (!card->cur_active && card->qcount > 0 && time_us >= card->next_allowed) {
+        card->cur_bad = card->corrupt_next;
+        card->corrupt_next = false;
+        card->cur_byte = card->txq[card->qhead];
+        card->qhead = (card->qhead + 1) % TXQ_MAX;
+        card->qcount--;
+        card->cur_start = time_us;
+        card->cur_active = true;
+        card->next_allowed = time_us + ISO7816_CHAR_GT_ETU * etu;
     }
 }
 
-static bool c_card_line(pc_card_t *c, uint32_t t)
+static bool card_line(pc_card_t *card, uint32_t time_us)
 {
-    uint32_t etu = c_etu_us(c);
-    if (c->err_active && t >= c->err_start && t < c->err_start + 2 * etu) return false;
-    if (!c->cur_active || t < c->cur_start) return true;   /* pull-up : H */
-    uint32_t m = (t - c->cur_start) / etu + 1;              /* moment 1..10 */
-    if (m > 10) return true;
-    bool lvl;
-    if (m == 1) {
-        lvl = false;
-    } else if (m <= 9) {
-        int bit = c_inverse(c) ? (9 - (int)m) : ((int)m - 2);
-        bool v = ((c->cur_byte >> bit) & 1U) != 0;
-        lvl = c_inverse(c) ? !v : v;
+    uint32_t etu = card_etu_us(card);
+    if (card->err_active && time_us >= card->err_start &&
+        time_us < card->err_start + MOCK_ERR_SIGNAL_ETU * etu) return false;
+    if (!card->cur_active || time_us < card->cur_start) return true;   /* pull-up : H */
+    uint32_t moment = (time_us - card->cur_start) / etu + 1;            /* moment 1..10 */
+    if (moment > ISO7816_CHAR_MOMENT_TOTAL) return true;
+    bool level;
+    if (moment == ISO7816_CHAR_MOMENT_START) {
+        level = false;
+    } else if (moment <= ISO7816_CHAR_MOMENT_LAST_DATA) {
+        int bit = card_inverse(card) ? ((int)ISO7816_CHAR_MOMENT_LAST_DATA - (int)moment)
+                                     : ((int)moment - (int)ISO7816_CHAR_MOMENT_FIRST_DATA);
+        bool value = ((card->cur_byte >> bit) & 1U) != 0;
+        level = card_inverse(card) ? !value : value;
     } else {
-        bool p = (__builtin_popcount(c->cur_byte) & 1U) != 0;
-        if (c->cur_bad) p = !p;
-        lvl = c_inverse(c) ? !p : p;
+        bool parity = (((unsigned)__builtin_popcount(card->cur_byte) & 1U) != 0U);
+        if (card->cur_bad) parity = !parity;
+        level = card_inverse(card) ? !parity : parity;
     }
-    return lvl;
+    return level;
 }
 
 /* ---------- protocole carte ---------- */
 
-static void c_queue(pc_card_t *c, const uint8_t *b, size_t n)
+static void card_queue(pc_card_t *card, const uint8_t *data, size_t len)
 {
-    for (size_t i = 0; i < n; i++) {
-        if (c->qcount >= TXQ_MAX) return;
-        c->txq[(c->qhead + c->qcount) % TXQ_MAX] = b[i];
-        c->qcount++;
+    for (size_t i = 0; i < len; i++) {
+        if (card->qcount >= TXQ_MAX) return;
+        card->txq[(card->qhead + card->qcount) % TXQ_MAX] = data[i];
+        card->qcount++;
     }
 }
 
-static void c_t1_queue_block(pc_card_t *c, uint8_t pcb, const uint8_t *inf, uint8_t len)
+static void card_t1_queue_block(pc_card_t *card, uint8_t pcb, const uint8_t *inf, uint8_t len)
 {
-    uint8_t blk[3 + ISO7816_T1_INF_MAX + 1];
-    blk[0] = 0x00;
+    uint8_t blk[ISO7816_T1_HEADER_LEN + ISO7816_T1_INF_MAX + 1];
+    blk[0] = ISO7816_T1_NAD_DEFAULT;
     blk[1] = pcb;
     blk[2] = len;
-    if (len) memcpy(blk + 3, inf, len);
+    if (len) memcpy(blk + ISO7816_T1_HEADER_LEN, inf, len);
     uint8_t lrc = 0;
-    for (int i = 0; i < 3 + len; i++) lrc ^= blk[i];
-    blk[3 + len] = lrc;
-    c_queue(c, blk, (size_t)(4 + len));
+    for (size_t i = 0; i < ISO7816_T1_HEADER_LEN + len; i++) lrc ^= blk[i];
+    blk[ISO7816_T1_HEADER_LEN + len] = lrc;
+    card_queue(card, blk, (size_t)(ISO7816_T1_HEADER_LEN + 1 + len));
 }
 
-static void c_t1_pump_pending(pc_card_t *c)
+static void card_t1_pump_pending(pc_card_t *card)
 {
-    if (c->pend_head < c->pend_count) {
-        c_queue(c, c->pend_blk[c->pend_head], c->pend_len[c->pend_head]);
-        c->pend_head++;
+    if (card->pend_head < card->pend_count) {
+        card_queue(card, card->pend_blk[card->pend_head], card->pend_len[card->pend_head]);
+        card->pend_head++;
     }
 }
 
-static void c_t1_handle_block(pc_card_t *c)
+static void card_t1_handle_block(pc_card_t *card)
 {
-    uint8_t pcb = c->t1_pcb;
-    if ((pcb & 0x80) == 0) {                    /* I-block */
-        uint8_t ns = (uint8_t)((pcb >> 6) & 1);
-        bool more = (pcb & 0x20) != 0;
-        if (c->apdu_len + c->t1_inf_len <= sizeof(c->apdu)) {
-            memcpy(c->apdu + c->apdu_len, c->t1_inf, c->t1_inf_len);
-            c->apdu_len += c->t1_inf_len;
+    uint8_t pcb = card->t1_pcb;
+    if ((pcb & ISO7816_T1_PCB_IBLOCK_BIT) == 0) {   /* I-block */
+        bool ns = (pcb & ISO7816_T1_PCB_NS_BIT) != 0;
+        bool more = (pcb & ISO7816_T1_PCB_MORE_BIT) != 0;
+        if (card->apdu_len + card->t1_inf_len <= sizeof(card->apdu)) {
+            memcpy(card->apdu + card->apdu_len, card->t1_inf, card->t1_inf_len);
+            card->apdu_len += card->t1_inf_len;
         }
         if (more) {
             /* acquittement R(N(R) = N(S)^1) — règle 2.2 (N(S) reçu, pas le nôtre) */
-            c_t1_queue_block(c, (uint8_t)(0x80 | ((ns ^ 1) << 5)), NULL, 0);
+            card_t1_queue_block(card,
+                                (uint8_t)(ISO7816_T1_PCB_RBLOCK |
+                                          ((ns ^ 1U) != 0 ? ISO7816_T1_PCB_NR_BIT : 0)),
+                                NULL, 0);
         } else {
-            cmd_entry_t *e = NULL;
-            for (int i = 0; i < 8; i++) {
-                if (c->cmds[i].used && c->apdu_len >= 2 && c->cmds[i].ins == c->apdu[1]) e = &c->cmds[i];
+            cmd_entry_t *entry = NULL;
+            for (int i = 0; i < CMD_SLOTS; i++) {
+                if (card->cmds[i].used && card->apdu_len >= 2 && card->cmds[i].ins == card->apdu[1]) {
+                    entry = &card->cmds[i];
+                }
             }
-            if (e) {
-                e->fn(c, c->apdu, c->apdu_len);
+            if (entry) {
+                entry->fn(card, card->apdu, card->apdu_len);
             } else {
-                uint8_t sw[2] = { 0x6D, 0x00 };
-                pc_card_t1_queue_response(c, NULL, 0, 0x6D00);
-                (void)sw;
+                pc_card_t1_queue_response(card, NULL, 0, 0x6D00);   /* INS non supporté */
             }
-            c->apdu_len = 0;
+            card->apdu_len = 0;
         }
-    } else if ((pcb & 0xC0) == 0xC0) {          /* S-block */
-        uint8_t func = pcb & 0x1F;
-        if (func == 0x03 && (pcb & 0x20) == 0) { /* S(WTX request) -> S(WTX response) */
-            c_t1_queue_block(c, (uint8_t)(0xC0 | 0x20 | 0x03), c->t1_inf, c->t1_inf_len);
+    } else if ((pcb & ISO7816_T1_PCB_TYPE_MASK) == ISO7816_T1_PCB_SBLOCK) {
+        uint8_t s_func = pcb & ISO7816_T1_PCB_FUNC_MASK;
+        if (s_func == ISO7816_T1_S_WTX && (pcb & ISO7816_T1_PCB_RESP_BIT) == 0) {
+            /* S(WTX request) -> S(WTX response) */
+            card_t1_queue_block(card,
+                                (uint8_t)(ISO7816_T1_PCB_SBLOCK | ISO7816_T1_PCB_RESP_BIT | ISO7816_T1_S_WTX),
+                                card->t1_inf, card->t1_inf_len);
         }
-        if (func == 0x00 && (pcb & 0x20) == 0) { /* S(RESYNCH request) -> response, état initial */
-            c_t1_queue_block(c, (uint8_t)(0xC0 | 0x20 | 0x00), NULL, 0);
-            c->t1_ns = 0;
-            c->apdu_len = 0;
+        if (s_func == ISO7816_T1_S_RESYNCH && (pcb & ISO7816_T1_PCB_RESP_BIT) == 0) {
+            /* S(RESYNCH request) -> response, état initial */
+            card_t1_queue_block(card,
+                                (uint8_t)(ISO7816_T1_PCB_SBLOCK | ISO7816_T1_PCB_RESP_BIT | ISO7816_T1_S_RESYNCH),
+                                NULL, 0);
+            card->t1_ns = 0;
+            card->apdu_len = 0;
         }
-    } else if ((pcb & 0xC0) == 0x80) {
+    } else if ((pcb & ISO7816_T1_PCB_TYPE_MASK) == ISO7816_T1_PCB_RBLOCK) {
         /* R-block (ack de l'IFD) : on peut envoyer le bloc chaîné suivant */
-        c_t1_pump_pending(c);
+        card_t1_pump_pending(card);
     }
 }
 
-static void c_t1_byte(pc_card_t *c, uint8_t b)
+static void card_t1_byte(pc_card_t *card, uint8_t byte)
 {
-    switch (c->t1_state) {
-    case 0: c->t1_nad = b; c->t1_state = 1; break;
-    case 1: c->t1_pcb = b; c->t1_state = 2; break;
+    switch (card->t1_state) {
+    case 0: card->t1_nad = byte; card->t1_state = 1; break;
+    case 1: card->t1_pcb = byte; card->t1_state = 2; break;
     case 2:
-        c->t1_len = b;
-        c->t1_inf_len = 0;
-        c->t1_state = (b == 0) ? 4 : 3;
+        card->t1_len = byte;
+        card->t1_inf_len = 0;
+        card->t1_state = (byte == 0) ? 4 : 3;
         break;
     case 3:
-        if (c->t1_inf_len < ISO7816_T1_INF_MAX) c->t1_inf[c->t1_inf_len++] = b;
-        if (c->t1_inf_len >= c->t1_len) c->t1_state = 4;
+        if (card->t1_inf_len < ISO7816_T1_INF_MAX) card->t1_inf[card->t1_inf_len++] = byte;
+        if (card->t1_inf_len >= card->t1_len) card->t1_state = 4;
         break;
     case 4: {
-        uint8_t x = (uint8_t)(c->t1_nad ^ c->t1_pcb ^ c->t1_len);
-        for (int i = 0; i < c->t1_inf_len; i++) x ^= c->t1_inf[i];
-        c->t1_state = 0;
-        if ((uint8_t)(x ^ b) != 0) {
-            /* LRC faux : R-block avec code erreur 0001 */
-            c_t1_queue_block(c, (uint8_t)(0x80 | (c->t1_ns << 5) | 0x01), NULL, 0);
+        uint8_t xor_acc = (uint8_t)(card->t1_nad ^ card->t1_pcb ^ card->t1_len);
+        for (int i = 0; i < (int)card->t1_inf_len; i++) xor_acc ^= card->t1_inf[i];
+        card->t1_state = 0;
+        if ((uint8_t)(xor_acc ^ byte) != 0) {
+            /* LRC faux : R-block avec code erreur EDC */
+            card_t1_queue_block(card,
+                                (uint8_t)(ISO7816_T1_PCB_RBLOCK |
+                                          ((card->t1_ns & 1U) != 0 ? ISO7816_T1_PCB_NR_BIT : 0) |
+                                          ISO7816_T1_R_ERR_EDC),
+                                NULL, 0);
             return;
         }
-        c_t1_handle_block(c);
+        card_t1_handle_block(card);
         break;
     }
     default:
-        c->t1_state = 0;
+        card->t1_state = 0;
         break;
     }
 }
 
-static void c_t0_byte(pc_card_t *c, uint8_t b)
+static void card_t0_byte(pc_card_t *card, uint8_t byte)
 {
-    if (c->in_pps) {
-        if (c->pps_len < sizeof(c->pps_buf)) c->pps_buf[c->pps_len++] = b;
-        if (c->pps_len == 2) {
-            uint8_t pps0 = c->pps_buf[1];
-            c->pps_expected = 2 + ((pps0 & 0x10) ? 1 : 0) + ((pps0 & 0x20) ? 1 : 0) +
-                              ((pps0 & 0x40) ? 1 : 0) + 1;
-        } else if (c->pps_len >= c->pps_expected) {
-            if (c->pps_accept) c_queue(c, c->pps_buf, c->pps_expected);
-            c->in_pps = false;
-            c->pps_len = 0;
+    if (card->in_pps) {
+        if (card->pps_len < sizeof(card->pps_buf)) card->pps_buf[card->pps_len++] = byte;
+        if (card->pps_len == 2) {
+            uint8_t pps0 = card->pps_buf[1];
+            card->pps_expected = 2 + ((pps0 & ISO7816_PPS0_PPS1_BIT) ? 1 : 0) +
+                                 ((pps0 & ISO7816_PPS0_PPS2_BIT) ? 1 : 0) +
+                                 ((pps0 & ISO7816_PPS0_PPS3_BIT) ? 1 : 0) + 1;
+        } else if (card->pps_len >= card->pps_expected) {
+            if (card->pps_accept) card_queue(card, card->pps_buf, card->pps_expected);
+            card->in_pps = false;
+            card->pps_len = 0;
         }
         return;
     }
-    if (b == 0xFF && c->t0_hdr_len == 0 && !c->t0_await_data) {
-        c->in_pps = true;
-        c->pps_len = 0;
-        c->pps_buf[c->pps_len++] = b;
+    if (byte == ISO7816_PPS_PPSS && card->t0_hdr_len == 0 && !card->t0_await_data) {
+        card->in_pps = true;
+        card->pps_len = 0;
+        card->pps_buf[card->pps_len++] = byte;
         return;
     }
-    if (!c->t0_await_data) {
-        if (c->t0_hdr_len < 5) c->t0_hdr[c->t0_hdr_len++] = b;
-        if (c->t0_hdr_len < 5) return;
-        uint8_t ins = c->t0_hdr[1];
-        uint8_t p3 = c->t0_hdr[4];
-        c->cur_cmd = NULL;
-        for (int i = 0; i < 8; i++) {
-            if (c->cmds[i].used && c->cmds[i].ins == ins) c->cur_cmd = &c->cmds[i];
+    if (!card->t0_await_data) {
+        if (card->t0_hdr_len < ISO7816_T0_HEADER_LEN) card->t0_hdr[card->t0_hdr_len++] = byte;
+        if (card->t0_hdr_len < ISO7816_T0_HEADER_LEN) return;
+        uint8_t ins = card->t0_hdr[1];
+        uint8_t p3 = card->t0_hdr[4];
+        card->cur_cmd = NULL;
+        for (int i = 0; i < CMD_SLOTS; i++) {
+            if (card->cmds[i].used && card->cmds[i].ins == ins) card->cur_cmd = &card->cmds[i];
         }
-        if (!c->cur_cmd) {
-            uint8_t sw[2] = { 0x6D, 0x00 };
-            c_queue(c, sw, 2);
-            c->t0_hdr_len = 0;
+        if (!card->cur_cmd) {
+            uint8_t sw[ISO7816_SW_LEN] = { 0x6D, 0x00 };
+            card_queue(card, sw, ISO7816_SW_LEN);
+            card->t0_hdr_len = 0;
             return;
         }
-        if (c->cur_cmd->incoming && p3 > 0) {
-            c->t0_await_data = true;
-            c->t0_data_need = p3;
-            c->t0_data_len = 0;
+        if (card->cur_cmd->incoming && p3 > 0) {
+            card->t0_await_data = true;
+            card->t0_data_need = p3;
+            card->t0_data_len = 0;
             uint8_t ack = ins;                      /* ACK = INS : toutes les données */
-            c_queue(c, &ack, 1);
+            card_queue(card, &ack, 1);
         } else {
-            memcpy(c->apdu, c->t0_hdr, 5);
-            c->cur_cmd->fn(c, c->apdu, 5);
-            c->t0_hdr_len = 0;
+            memcpy(card->apdu, card->t0_hdr, ISO7816_T0_HEADER_LEN);
+            card->cur_cmd->fn(card, card->apdu, ISO7816_T0_HEADER_LEN);
+            card->t0_hdr_len = 0;
         }
     } else {
-        if (c->t0_data_len < sizeof(c->t0_data)) c->t0_data[c->t0_data_len++] = b;
-        if (c->t0_data_len >= c->t0_data_need) {
-            c->t0_await_data = false;
-            memcpy(c->apdu, c->t0_hdr, 5);
-            memcpy(c->apdu + 5, c->t0_data, c->t0_data_len);
-            if (c->cur_cmd) c->cur_cmd->fn(c, c->apdu, 5 + c->t0_data_len);
-            c->t0_hdr_len = 0;
-            c->t0_data_len = 0;
+        if (card->t0_data_len < sizeof(card->t0_data)) card->t0_data[card->t0_data_len++] = byte;
+        if (card->t0_data_len >= card->t0_data_need) {
+            card->t0_await_data = false;
+            memcpy(card->apdu, card->t0_hdr, ISO7816_T0_HEADER_LEN);
+            memcpy(card->apdu + ISO7816_T0_HEADER_LEN, card->t0_data, card->t0_data_len);
+            if (card->cur_cmd) card->cur_cmd->fn(card, card->apdu, ISO7816_T0_HEADER_LEN + card->t0_data_len);
+            card->t0_hdr_len = 0;
+            card->t0_data_len = 0;
         }
     }
 }
 
-static void c_on_byte(pc_card_t *c, uint8_t b)
+static void card_on_byte(pc_card_t *card, uint8_t byte)
 {
-    if (c->rxlog_len < RXLOG_MAX) c->rxlog[c->rxlog_len++] = b;
-    if (c->phase != 1) return;
-    if (c->protocol == 1) c_t1_byte(c, b);
-    else c_t0_byte(c, b);
+    if (card->rxlog_len < RXLOG_MAX) card->rxlog[card->rxlog_len++] = byte;
+    if (card->phase != 1) return;
+    if (card->protocol == ISO7816_PROTOCOL_T1) card_t1_byte(card, byte);
+    else card_t0_byte(card, byte);
 }
 
 /* Décode le caractère que l'IFD vient d'émettre (fronts enregistrés). */
-static void c_decode_ifd_char(pc_card_t *c)
+static void card_decode_ifd_char(pc_card_t *card)
 {
-    if (c->n_edges == 0) return;
+    if (card->n_edges == 0) return;
     int i0 = -1;
-    for (int i = 0; i < c->n_edges; i++) {
-        if (!c->edges[i].lvl) { i0 = i; break; }
+    for (int i = 0; i < card->n_edges; i++) {
+        if (!card->edges[i].level) { i0 = i; break; }
     }
     if (i0 < 0) return;
-    uint32_t t0 = c->edges[i0].t;
-    uint32_t etu = c_etu_us(c);
+    uint32_t t_start = card->edges[i0].time_us;
+    uint32_t etu = card_etu_us(card);
 
-    uint8_t b = 0;
+    uint8_t byte = 0;
     unsigned ones = 0;
-    for (int m = 2; m <= 10; m++) {
-        uint32_t s = t0 + (uint32_t)((2 * m - 1) * etu / 2);
-        bool lvl = true;
-        for (int i = 0; i < c->n_edges; i++) {
-            if (c->edges[i].t <= s) lvl = c->edges[i].lvl;
+    for (int moment = (int)ISO7816_CHAR_MOMENT_FIRST_DATA;
+         moment <= (int)ISO7816_CHAR_MOMENT_TOTAL; moment++) {
+        uint32_t sample_us = t_start + (uint32_t)((2 * moment - 1) * etu / ISO7816_CHAR_HALF_ETU_DIV);
+        bool level = true;
+        for (int i = 0; i < card->n_edges; i++) {
+            if (card->edges[i].time_us <= sample_us) level = card->edges[i].level;
             else break;
         }
-        bool v = c_inverse(c) ? !lvl : lvl;
-        ones += v ? 1U : 0U;
-        if (m <= 9) {
-            int bit = c_inverse(c) ? (9 - m) : (m - 2);
-            if (v) b |= (uint8_t)(1U << bit);
+        bool value = card_inverse(card) ? !level : level;
+        ones += value ? 1U : 0U;
+        if (moment <= (int)ISO7816_CHAR_MOMENT_LAST_DATA) {
+            int bit = card_inverse(card) ? ((int)ISO7816_CHAR_MOMENT_LAST_DATA - moment)
+                                         : (moment - (int)ISO7816_CHAR_MOMENT_FIRST_DATA);
+            if (value) byte |= (uint8_t)(1U << bit);
         }
     }
-    /* la carte attend GT après le leading edge du caractère de l'IFD */
-    if (t0 + 12 * etu > c->next_allowed) c->next_allowed = t0 + 12 * etu;
+    /* la carte attend le GT après le leading edge du caractère de l'IFD */
+    if (t_start + ISO7816_CHAR_GT_ETU * etu > card->next_allowed) {
+        card->next_allowed = t_start + ISO7816_CHAR_GT_ETU * etu;
+    }
 
     if ((ones & 1U) != 0U) {
         /* parité fausse côté IFD : la carte émet le signal d'erreur à 10,5 etu */
-        c->err_active = true;
-        c->err_start = t0 + (21 * etu / 2);
+        card->err_active = true;
+        card->err_start = t_start + (ISO7816_CHAR_ERR_SIGNAL_HALF_ETU * etu / ISO7816_CHAR_HALF_ETU_DIV);
         return;
     }
-    c_on_byte(c, b);
+    card_on_byte(card, byte);
 }
 
 /* ---------- callbacks HAL ---------- */
@@ -374,51 +399,52 @@ static void m_deinit(void *ctx) { (void)ctx; }
 
 static void m_vcc_on(void *ctx, iso7816_class_t cls)
 {
-    pc_card_t *c = ctx;
-    c->vcc_on = true;
-    c->cls = cls;
-    c->n_edges = 0;
+    pc_card_t *card = ctx;
+    card->vcc_on = true;
+    card->cls = cls;
+    card->n_edges = 0;
 }
 
 static void m_vcc_off(void *ctx)
 {
-    pc_card_t *c = ctx;
-    c->vcc_on = false;
-    c->phase = 0;
+    pc_card_t *card = ctx;
+    card->vcc_on = false;
+    card->phase = 0;
 }
 
 static void m_rst(void *ctx, bool high)
 {
-    pc_card_t *c = ctx;
-    if (high && !c->rst_high && c->vcc_on) {
+    pc_card_t *card = ctx;
+    if (high && !card->rst_high && card->vcc_on) {
         /* cold/warm reset : la carte va répondre à l'ATR */
-        c->phase = 1;
-        c->n_edges = 0;
-        c->rxlog_len = 0;
-        c->qcount = 0;
-        c->cur_active = false;
-        c->err_active = false;
-        c->in_pps = false;
-        c->t0_hdr_len = 0;
-        c->t0_await_data = false;
-        c->t1_state = 0;
-        c->apdu_len = 0;
-        c->t1_ns = 0;
-        if (!c->silent) {
+        card->phase = 1;
+        card->n_edges = 0;
+        card->rxlog_len = 0;
+        card->qcount = 0;
+        card->cur_active = false;
+        card->err_active = false;
+        card->in_pps = false;
+        card->t0_hdr_len = 0;
+        card->t0_await_data = false;
+        card->t1_state = 0;
+        card->apdu_len = 0;
+        card->t1_ns = 0;
+        if (!card->silent) {
             uint8_t hdr[1 + ISO7816_ATR_MAX_BYTES];
-            hdr[0] = c->ts;
-            memcpy(hdr + 1, c->atr, c->atr_len);
-            c_queue(c, hdr, 1 + c->atr_len);
+            hdr[0] = card->ts;
+            memcpy(hdr + 1, card->atr, card->atr_len);
+            card_queue(card, hdr, 1 + card->atr_len);
         }
-        c->next_allowed = c->now_us + c_cycles_us(c, 400);  /* réponse entre 400 et 40000 cycles */
+        /* réponse entre 400 et 40 000 cycles (cl. 6.2.2) */
+        card->next_allowed = card->now_us + card_cycles_us(card, ISO7816_COLD_RESET_RST_LOW_CYCLES);
     }
-    c->rst_high = high;
+    card->rst_high = high;
 }
 
 static uint32_t m_clk_start(void *ctx, uint32_t hz)
 {
-    pc_card_t *c = ctx;
-    c->clk_hz = hz;
+    pc_card_t *card = ctx;
+    card->clk_hz = hz;
     return hz;
 }
 
@@ -426,62 +452,62 @@ static void m_clk_stop(void *ctx, bool keep_high) { (void)ctx; (void)keep_high; 
 
 static void m_io_tx(void *ctx, bool high)
 {
-    pc_card_t *c = ctx;
-    c->ifd_tx = true;
-    c->ifd_level = high;
-    if (c->n_edges == 0 || c->edges[c->n_edges - 1].lvl != high) {
-        if (c->n_edges < EDGES_MAX) {
-            c->edges[c->n_edges].t = c->now_us;
-            c->edges[c->n_edges].lvl = high;
-            c->n_edges++;
+    pc_card_t *card = ctx;
+    card->ifd_tx = true;
+    card->ifd_level = high;
+    if (card->n_edges == 0 || card->edges[card->n_edges - 1].level != high) {
+        if (card->n_edges < EDGES_MAX) {
+            card->edges[card->n_edges].time_us = card->now_us;
+            card->edges[card->n_edges].level = high;
+            card->n_edges++;
         }
     }
 }
 
 static void m_io_rx(void *ctx)
 {
-    pc_card_t *c = ctx;
-    c->ifd_tx = false;
-    if (c->n_edges >= 1) {
+    pc_card_t *card = ctx;
+    card->ifd_tx = false;
+    if (card->n_edges >= 1) {
         /* durée entre le premier front à L et la libération de la ligne :
            ~10 etu = caractère, 1..2 etu = signal d'erreur de l'IFD (cl. 7.3) */
         int i0 = -1;
-        for (int i = 0; i < c->n_edges; i++) {
-            if (!c->edges[i].lvl) { i0 = i; break; }
+        for (int i = 0; i < card->n_edges; i++) {
+            if (!card->edges[i].level) { i0 = i; break; }
         }
-        uint32_t dur = (i0 >= 0) ? (c->now_us - c->edges[i0].t) : 0;
-        if (dur < 3 * c_etu_us(c)) {
-            c->ifd_err_count++;
+        uint32_t dur = (i0 >= 0) ? (card->now_us - card->edges[i0].time_us) : 0;
+        if (dur < 3 * card_etu_us(card)) {
+            card->ifd_err_count++;
         } else {
-            c_decode_ifd_char(c);
+            card_decode_ifd_char(card);
         }
     }
-    c->n_edges = 0;
+    card->n_edges = 0;
 }
 
 static bool m_io_read(void *ctx)
 {
-    pc_card_t *c = ctx;
-    c_pump(c, c->now_us);
-    if (c->ifd_tx) return c->ifd_level;
-    return c_card_line(c, c->now_us);
+    pc_card_t *card = ctx;
+    card_pump(card, card->now_us);
+    if (card->ifd_tx) return card->ifd_level;
+    return card_line(card, card->now_us);
 }
 
 static uint32_t m_micros(void *ctx)
 {
-    pc_card_t *c = ctx;
-    uint32_t t = c->now_us;
-    c_pump(c, t);
-    c->now_us = t + 1;      /* chaque scrutation fait avancer le temps virtuel de 1 µs */
-    return t;
+    pc_card_t *card = ctx;
+    uint32_t now_us = card->now_us;
+    card_pump(card, now_us);
+    card->now_us = now_us + 1;  /* chaque scrutation fait avancer le temps virtuel de 1 µs */
+    return now_us;
 }
 
 static void m_delay_us(void *ctx, uint32_t us)
 {
-    pc_card_t *c = ctx;
+    pc_card_t *card = ctx;
     for (uint32_t i = 0; i < us; i++) {
-        c_pump(c, c->now_us);
-        c->now_us++;
+        card_pump(card, card->now_us);
+        card->now_us++;
     }
 }
 
@@ -489,116 +515,117 @@ static void m_delay_us(void *ctx, uint32_t us)
 
 pc_card_t *pc_card_create(void)
 {
-    pc_card_t *c = calloc(1, sizeof(*c));
-    c->hal.ctx = c;
-    c->hal.init = m_init;
-    c->hal.deinit = m_deinit;
-    c->hal.vcc_on = m_vcc_on;
-    c->hal.vcc_off = m_vcc_off;
-    c->hal.rst_drive = m_rst;
-    c->hal.clk_start = m_clk_start;
-    c->hal.clk_stop = m_clk_stop;
-    c->hal.io_tx = m_io_tx;
-    c->hal.io_rx = m_io_rx;
-    c->hal.io_read = m_io_read;
-    c->hal.micros = m_micros;
-    c->hal.delay_us = m_delay_us;
-    c->ts = 0x3B;
-    c->pps_accept = true;
-    return c;
+    pc_card_t *card = calloc(1, sizeof(*card));
+    card->hal.ctx = card;
+    card->hal.init = m_init;
+    card->hal.deinit = m_deinit;
+    card->hal.vcc_on = m_vcc_on;
+    card->hal.vcc_off = m_vcc_off;
+    card->hal.rst_drive = m_rst;
+    card->hal.clk_start = m_clk_start;
+    card->hal.clk_stop = m_clk_stop;
+    card->hal.io_tx = m_io_tx;
+    card->hal.io_rx = m_io_rx;
+    card->hal.io_read = m_io_read;
+    card->hal.micros = m_micros;
+    card->hal.delay_us = m_delay_us;
+    card->ts = ISO7816_ATR_TS_DIRECT;
+    card->pps_accept = true;
+    return card;
 }
 
-void pc_card_destroy(pc_card_t *c) { free(c); }
+void pc_card_destroy(pc_card_t *card) { free(card); }
 
-const iso7816_hal_t *pc_card_hal(pc_card_t *c) { return &c->hal; }
+const iso7816_hal_t *pc_card_hal(pc_card_t *card) { return &card->hal; }
 
-void pc_card_attach(pc_card_t *c, iso7816_t *dev) { c->dev = dev; }
+void pc_card_attach(pc_card_t *card, iso7816_t *dev) { card->dev = dev; }
 
-void pc_card_set_atr(pc_card_t *c, uint8_t ts, const uint8_t *atr, size_t len)
+void pc_card_set_atr(pc_card_t *card, uint8_t ts, const uint8_t *atr, size_t len)
 {
-    c->ts = ts;
+    card->ts = ts;
     if (len > ISO7816_ATR_MAX_BYTES) len = ISO7816_ATR_MAX_BYTES;
-    memcpy(c->atr, atr, len);
-    c->atr_len = len;
+    memcpy(card->atr, atr, len);
+    card->atr_len = len;
 }
 
-void pc_card_set_protocol(pc_card_t *c, uint8_t t) { c->protocol = t; }
-void pc_card_set_pps_accept(pc_card_t *c, bool accept) { c->pps_accept = accept; }
-void pc_card_set_silent(pc_card_t *c, bool silent) { c->silent = silent; }
-void pc_card_corrupt_next_tx(pc_card_t *c) { c->corrupt_next = true; }
+void pc_card_set_protocol(pc_card_t *card, uint8_t protocol) { card->protocol = protocol; }
+void pc_card_set_pps_accept(pc_card_t *card, bool accept) { card->pps_accept = accept; }
+void pc_card_set_silent(pc_card_t *card, bool silent) { card->silent = silent; }
+void pc_card_corrupt_next_tx(pc_card_t *card) { card->corrupt_next = true; }
 
-void pc_card_set_cmd_handler(pc_card_t *c, uint8_t ins, bool incoming, pc_card_cmd_fn fn)
+void pc_card_set_cmd_handler(pc_card_t *card, uint8_t ins, bool incoming, pc_card_cmd_fn fn)
 {
-    for (int i = 0; i < 8; i++) {
-        if (!c->cmds[i].used) {
-            c->cmds[i].used = true;
-            c->cmds[i].ins = ins;
-            c->cmds[i].incoming = incoming;
-            c->cmds[i].fn = fn;
+    for (int i = 0; i < CMD_SLOTS; i++) {
+        if (!card->cmds[i].used) {
+            card->cmds[i].used = true;
+            card->cmds[i].ins = ins;
+            card->cmds[i].incoming = incoming;
+            card->cmds[i].fn = fn;
             return;
         }
     }
 }
 
-void pc_card_queue_tx(pc_card_t *c, const uint8_t *b, size_t n) { c_queue(c, b, n); }
+void pc_card_queue_tx(pc_card_t *card, const uint8_t *data, size_t len) { card_queue(card, data, len); }
 
-void pc_card_queue_sw(pc_card_t *c, uint16_t sw)
+void pc_card_queue_sw(pc_card_t *card, uint16_t sw)
 {
-    uint8_t b[2] = { (uint8_t)(sw >> 8), (uint8_t)(sw & 0xFF) };
-    c_queue(c, b, 2);
+    uint8_t sw_bytes[ISO7816_SW_LEN] = { (uint8_t)(sw >> 8), (uint8_t)(sw & ISO7816_BYTE_MASK) };
+    card_queue(card, sw_bytes, ISO7816_SW_LEN);
 }
 
-void pc_card_t0_queue_ack_all(pc_card_t *c, uint8_t ins)
+void pc_card_t0_queue_ack_all(pc_card_t *card, uint8_t ins)
 {
-    c_queue(c, &ins, 1);
+    card_queue(card, &ins, 1);
 }
 
-void pc_card_t0_queue_data_sw(pc_card_t *c, const uint8_t *data, size_t n, uint16_t sw)
+void pc_card_t0_queue_data_sw(pc_card_t *card, const uint8_t *data, size_t len, uint16_t sw)
 {
-    c_queue(c, data, n);
-    pc_card_queue_sw(c, sw);
+    card_queue(card, data, len);
+    pc_card_queue_sw(card, sw);
 }
 
-void pc_card_t1_queue_response(pc_card_t *c, const uint8_t *data, size_t n, uint16_t sw)
+void pc_card_t1_queue_response(pc_card_t *card, const uint8_t *data, size_t len, uint16_t sw)
 {
     uint8_t payload[600];
-    if (n > sizeof(payload) - 2) n = sizeof(payload) - 2;
-    memcpy(payload, data, n);
-    payload[n] = (uint8_t)(sw >> 8);
-    payload[n + 1] = (uint8_t)(sw & 0xFF);
-    size_t total = n + 2;
-    uint8_t ifsc = c->dev ? c->dev->ifsc : 32;
-    if (ifsc == 0) ifsc = 32;
+    if (len > sizeof(payload) - ISO7816_SW_LEN) len = sizeof(payload) - ISO7816_SW_LEN;
+    memcpy(payload, data, len);
+    payload[len] = (uint8_t)(sw >> 8);
+    payload[len + 1] = (uint8_t)(sw & ISO7816_BYTE_MASK);
+    size_t total = len + ISO7816_SW_LEN;
+    uint8_t ifsc = card->dev ? card->dev->ifsc : ISO7816_IFSC_DEFAULT;
+    if (ifsc == 0) ifsc = ISO7816_IFSC_DEFAULT;
     size_t off = 0;
-    c->pend_count = 0;
-    c->pend_head = 0;
+    card->pend_count = 0;
+    card->pend_head = 0;
     do {
         size_t chunk = total - off;
         if (chunk > ifsc) chunk = ifsc;
         bool more = (off + chunk) < total;
-        uint8_t pcb = (uint8_t)(((c->t1_ns & 1) << 6) | (more ? 0x20 : 0x00));
-        uint8_t *blk = c->pend_blk[c->pend_count];
-        blk[0] = 0x00;
+        uint8_t pcb = (uint8_t)(((card->t1_ns & 1U) != 0 ? ISO7816_T1_PCB_NS_BIT : 0) |
+                                (more ? ISO7816_T1_PCB_MORE_BIT : 0));
+        uint8_t *blk = card->pend_blk[card->pend_count];
+        blk[0] = ISO7816_T1_NAD_DEFAULT;
         blk[1] = pcb;
         blk[2] = (uint8_t)chunk;
-        memcpy(blk + 3, payload + off, chunk);
+        memcpy(blk + ISO7816_T1_HEADER_LEN, payload + off, chunk);
         uint8_t lrc = 0;
-        for (size_t i = 0; i < 3 + chunk; i++) lrc ^= blk[i];
-        blk[3 + chunk] = lrc;
-        c->pend_len[c->pend_count] = (uint8_t)(4 + chunk);
-        c->pend_count++;
-        c->t1_ns ^= 1;
+        for (size_t i = 0; i < ISO7816_T1_HEADER_LEN + chunk; i++) lrc ^= blk[i];
+        blk[ISO7816_T1_HEADER_LEN + chunk] = lrc;
+        card->pend_len[card->pend_count] = (uint8_t)(ISO7816_T1_HEADER_LEN + 1 + chunk);
+        card->pend_count++;
+        card->t1_ns ^= 1;
         off += chunk;
     } while (off < total);
-    c_t1_pump_pending(c);   /* le premier bloc part immédiatement (il ack la commande) */
+    card_t1_pump_pending(card);   /* le premier bloc part immédiatement (il ack la commande) */
 }
 
-size_t pc_card_rxlog(const pc_card_t *c, uint8_t *out, size_t cap)
+size_t pc_card_rxlog(const pc_card_t *card, uint8_t *out, size_t cap)
 {
-    size_t n = c->rxlog_len < cap ? c->rxlog_len : cap;
-    memcpy(out, c->rxlog, n);
-    return n;
+    size_t len = card->rxlog_len < cap ? card->rxlog_len : cap;
+    memcpy(out, card->rxlog, len);
+    return len;
 }
 
-uint32_t pc_card_ifd_err_signals(const pc_card_t *c) { return c->ifd_err_count; }
-uint32_t pc_card_now_us(const pc_card_t *c) { return c->now_us; }
+uint32_t pc_card_ifd_err_signals(const pc_card_t *card) { return card->ifd_err_count; }
+uint32_t pc_card_now_us(const pc_card_t *card) { return card->now_us; }

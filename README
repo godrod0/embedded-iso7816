@@ -24,3 +24,12 @@ flowchart TB
     DEV --> HAL[iso7816_hal_t — unique API matérielle]
     HAL --> STM[port/stm32u5 — GPIO + TIM PWM + load-switches VCC]
     HAL --> PC[port PC mock + carte simulée — tests]
+```
+
+## Conventions de code
+
+- Toute constante de la norme est une **macro** définie dans
+  `include/iso7816/iso7816_const.h` (une macro par constante, `ISO7816_<CLASSE>_<NOM>`,
+  organisée par clause) — aucun littéral magique dans les sources.
+- Les variables de statut (`iso7816_status_t`) contiennent `stat` dans leur nom
+  (ex. `stat`, `stat_resp`, `last_stat`) ; le pointeur de contexte est `dev`.

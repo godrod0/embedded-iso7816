@@ -6,89 +6,79 @@
 #include "iso7816/iso7816_char.h"
 #include "iso7816_internal.h"
 
-/* ---- constantes du protocole (cl. 11) ---- */
-#define T1_BGT_ETU   22U                       /* block guard time (cl. 11.2) */
-
-/* S-block : fonctions (bits 5..1 de PCB, bit 6 = réponse) — cl. 11.3.2.2 */
-#define T1_S_RESYNCH 0x00
-#define T1_S_IFS     0x01
-#define T1_S_ABORT   0x02
-#define T1_S_WTX     0x03
-
-#define T1_R_ERR_EDC 0x01    /* erreur de redondance / parité (cl. 11.3.2.2) */
-#define T1_R_ERR_OTHER 0x02
-
-static uint32_t t1_cwt_us(const iso7816_t *d)
+static uint32_t t1_cwt_us(const iso7816_t *dev)
 {
-    /* CWT = (11 + 2^CWI) etu, min 12 etu (cl. 11.4.3) */
-    return (11U + (1U << d->cwi)) * iso7816_etu_us(d);
+    /* CWT = (11 + 2^CWI) etu (cl. 11.4.3) */
+    return (ISO7816_T1_CWT_BASE_ETU + (1U << dev->cwi)) * iso7816_etu_us(dev);
 }
 
-static uint32_t t1_bwt_us(const iso7816_t *d)
+static uint32_t t1_bwt_us(const iso7816_t *dev)
 {
     /* BWT = 11 etu + 2^BWI * 960 * Fd/f, Fd = 372 (cl. 11.4.3) */
-    uint32_t etu = iso7816_etu_us(d);
-    uint64_t extra = ((uint64_t)(1U << d->bwi) * 960ULL * 372ULL * 1000000ULL) / d->f_hz;
-    return 11U * etu + (uint32_t)extra;
+    uint32_t etu = iso7816_etu_us(dev);
+    uint64_t extra = ((uint64_t)(1U << dev->bwi) * ISO7816_T1_BWT_ETU_PER_BWI *
+                      ISO7816_T1_BWT_FD * ISO7816_US_PER_SECOND) / dev->f_hz;
+    return ISO7816_T1_BWT_BASE_ETU * etu + (uint32_t)extra;
 }
 
 /* CRC-16 selon ISO/IEC 13239 (poly 0x1021, init 0xFFFF) — cl. 11.3.4 */
-static uint16_t t1_crc16(const uint8_t *p, size_t n)
+static uint16_t t1_crc16(const uint8_t *data, size_t len)
 {
-    uint16_t crc = 0xFFFF;
-    for (size_t i = 0; i < n; i++) {
-        crc ^= (uint16_t)(p[i] << 8);
-        for (int k = 0; k < 8; k++) {
-            crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021)
-                                 : (uint16_t)(crc << 1);
+    uint16_t crc = ISO7816_T1_CRC16_INIT;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= (uint16_t)(data[i] << 8);
+        for (int bit_index = 0; bit_index < (int)ISO7816_BITS_PER_BYTE; bit_index++) {
+            crc = (crc & ISO7816_T1_CRC16_MSB_MASK)
+                  ? (uint16_t)((crc << 1) ^ ISO7816_T1_CRC16_POLY)
+                  : (uint16_t)(crc << 1);
         }
     }
     return crc;
 }
 
-static bool t1_is_iblock(uint8_t pcb) { return (pcb & 0x80) == 0; }
-static bool t1_is_rblock(uint8_t pcb) { return (pcb & 0xC0) == 0x80; }
-static bool t1_is_sblock(uint8_t pcb) { return (pcb & 0xC0) == 0xC0; }
+static bool t1_is_iblock(uint8_t pcb) { return (pcb & ISO7816_T1_PCB_IBLOCK_BIT) == 0; }
+static bool t1_is_rblock(uint8_t pcb) { return (pcb & ISO7816_T1_PCB_TYPE_MASK) == ISO7816_T1_PCB_RBLOCK; }
+static bool t1_is_sblock(uint8_t pcb) { return (pcb & ISO7816_T1_PCB_TYPE_MASK) == ISO7816_T1_PCB_SBLOCK; }
 
-static iso7816_status_t t1_send_block(iso7816_t *d, uint8_t nad, uint8_t pcb,
+static iso7816_status_t t1_send_block(iso7816_t *dev, uint8_t nad, uint8_t pcb,
                                        const uint8_t *inf, uint8_t len)
 {
-    if (d->last_dir_rx) {
+    if (dev->last_dir_rx) {
         /* BGT entre le dernier caractère reçu et le premier émis (cl. 11.2) */
-        iso7816_wait_until(d, d->last_rx_lead_us + T1_BGT_ETU * iso7816_etu_us(d));
-        d->last_dir_rx = false;
+        iso7816_wait_until(dev, dev->last_rx_lead_us + ISO7816_T1_BGT_ETU * iso7816_etu_us(dev));
+        dev->last_dir_rx = false;
     }
 
-    uint8_t buf[3 + ISO7816_T1_INF_MAX];
+    uint8_t buf[ISO7816_T1_HEADER_LEN + ISO7816_T1_INF_MAX];
     buf[0] = nad;
     buf[1] = pcb;
     buf[2] = len;
-    if (len > 0) memcpy(buf + 3, inf, len);
-    size_t n = 3 + len;
+    if (len > 0) memcpy(buf + ISO7816_T1_HEADER_LEN, inf, len);
+    size_t block_len = ISO7816_T1_HEADER_LEN + len;
 
-    for (size_t i = 0; i < n; i++) {
-        iso7816_status_t st = iso7816_char_tx(d, buf[i]);
-        if (st != ISO7816_OK) return st;
+    for (size_t i = 0; i < block_len; i++) {
+        iso7816_status_t stat = iso7816_char_tx(dev, buf[i]);
+        if (stat != ISO7816_OK) return stat;
     }
 
-    if (d->use_crc) {
-        uint16_t c = t1_crc16(buf, n);
-        iso7816_status_t st = iso7816_char_tx(d, (uint8_t)(c >> 8));
-        if (st != ISO7816_OK) return st;
-        st = iso7816_char_tx(d, (uint8_t)(c & 0xFF));
-        if (st != ISO7816_OK) return st;
+    if (dev->use_crc) {
+        uint16_t crc_val = t1_crc16(buf, block_len);
+        iso7816_status_t stat = iso7816_char_tx(dev, (uint8_t)(crc_val >> 8));
+        if (stat != ISO7816_OK) return stat;
+        stat = iso7816_char_tx(dev, (uint8_t)(crc_val & ISO7816_BYTE_MASK));
+        if (stat != ISO7816_OK) return stat;
     } else {
         uint8_t lrc = 0;
-        for (size_t i = 0; i < n; i++) lrc ^= buf[i];
-        iso7816_status_t st = iso7816_char_tx(d, lrc);
-        if (st != ISO7816_OK) return st;
+        for (size_t i = 0; i < block_len; i++) lrc ^= buf[i];
+        iso7816_status_t stat = iso7816_char_tx(dev, lrc);
+        if (stat != ISO7816_OK) return stat;
     }
     return ISO7816_OK;
 }
 
-static iso7816_status_t t1_recv_byte(iso7816_t *d, uint8_t *b, uint32_t timeout_us)
+static iso7816_status_t t1_recv_byte(iso7816_t *dev, uint8_t *byte, uint32_t timeout_us)
 {
-    return iso7816_char_rx(d, b, timeout_us);
+    return iso7816_char_rx(dev, byte, timeout_us);
 }
 
 /*
@@ -96,78 +86,83 @@ static iso7816_status_t t1_recv_byte(iso7816_t *d, uint8_t *b, uint32_t timeout_
  * Retourne ISO7816_CHAR_WT si la carte est muette, ISO7816_T1_EDC si le
  * bloc est invalide (parité, LEN, LRC/CRC — cl. 11.6.3.1).
  */
-static iso7816_status_t t1_recv_block(iso7816_t *d, iso7816_t1_block_t *blk,
+static iso7816_status_t t1_recv_block(iso7816_t *dev, iso7816_t1_block_t *block,
                                        uint32_t timeout_us)
 {
-    uint8_t b;
-    iso7816_status_t st = t1_recv_byte(d, &b, timeout_us);
-    if (st != ISO7816_OK) return st;           /* CHAR_WT = BWT dépassé */
-    blk->nad = b;
-    d->last_rx_lead_us = iso7816_now(d);
-    d->last_dir_rx = true;
+    uint8_t byte;
+    iso7816_status_t stat = t1_recv_byte(dev, &byte, timeout_us);
+    if (stat != ISO7816_OK) return stat;       /* CHAR_WT = BWT dépassé */
+    block->nad = byte;
+    dev->last_rx_lead_us = iso7816_now(dev);
+    dev->last_dir_rx = true;
 
-    uint32_t cwt = t1_cwt_us(d);
-    st = t1_recv_byte(d, &b, cwt);
-    if (st != ISO7816_OK) return ISO7816_T1_EDC;
-    blk->pcb = b;
-    st = t1_recv_byte(d, &b, cwt);
-    if (st != ISO7816_OK) return ISO7816_T1_EDC;
-    blk->len = b;
-    blk->inf_len = b;
-    if (b > ISO7816_T1_INF_MAX) return ISO7816_T1_EDC;
+    uint32_t cwt_us = t1_cwt_us(dev);
+    stat = t1_recv_byte(dev, &byte, cwt_us);
+    if (stat != ISO7816_OK) return ISO7816_T1_EDC;
+    block->pcb = byte;
+    stat = t1_recv_byte(dev, &byte, cwt_us);
+    if (stat != ISO7816_OK) return ISO7816_T1_EDC;
+    block->len = byte;
+    block->inf_len = byte;
+    if (byte > ISO7816_T1_INF_MAX) return ISO7816_T1_EDC;
 
-    uint8_t x = blk->nad ^ blk->pcb ^ blk->len;
-    for (uint8_t i = 0; i < b; i++) {
-        st = t1_recv_byte(d, &blk->inf[i], cwt);
-        if (st != ISO7816_OK) return ISO7816_T1_EDC;
-        x ^= blk->inf[i];
+    uint8_t lrc_acc = block->nad ^ block->pcb ^ block->len;
+    for (uint8_t i = 0; i < byte; i++) {
+        stat = t1_recv_byte(dev, &block->inf[i], cwt_us);
+        if (stat != ISO7816_OK) return ISO7816_T1_EDC;
+        lrc_acc ^= block->inf[i];
     }
 
-    if (d->use_crc) {
-        uint8_t hi, lo;
-        st = t1_recv_byte(d, &hi, cwt);
-        if (st != ISO7816_OK) return ISO7816_T1_EDC;
-        st = t1_recv_byte(d, &lo, cwt);
-        if (st != ISO7816_OK) return ISO7816_T1_EDC;
-        uint8_t tmp[3 + ISO7816_T1_INF_MAX];
-        tmp[0] = blk->nad; tmp[1] = blk->pcb; tmp[2] = blk->len;
-        memcpy(tmp + 3, blk->inf, b);
-        uint16_t c = t1_crc16(tmp, 3 + b);
-        if (c != (uint16_t)((hi << 8) | lo)) return ISO7816_T1_EDC;
+    if (dev->use_crc) {
+        uint8_t crc_hi, crc_lo;
+        stat = t1_recv_byte(dev, &crc_hi, cwt_us);
+        if (stat != ISO7816_OK) return ISO7816_T1_EDC;
+        stat = t1_recv_byte(dev, &crc_lo, cwt_us);
+        if (stat != ISO7816_OK) return ISO7816_T1_EDC;
+        uint8_t crc_buf[ISO7816_T1_HEADER_LEN + ISO7816_T1_INF_MAX];
+        crc_buf[0] = block->nad; crc_buf[1] = block->pcb; crc_buf[2] = block->len;
+        memcpy(crc_buf + ISO7816_T1_HEADER_LEN, block->inf, byte);
+        uint16_t crc_val = t1_crc16(crc_buf, ISO7816_T1_HEADER_LEN + byte);
+        if (crc_val != (uint16_t)((crc_hi << 8) | crc_lo)) return ISO7816_T1_EDC;
     } else {
         uint8_t lrc;
-        st = t1_recv_byte(d, &lrc, cwt);
-        if (st != ISO7816_OK) return ISO7816_T1_EDC;
-        if ((uint8_t)(x ^ lrc) != 0) return ISO7816_T1_EDC;
+        stat = t1_recv_byte(dev, &lrc, cwt_us);
+        if (stat != ISO7816_OK) return ISO7816_T1_EDC;
+        if ((uint8_t)(lrc_acc ^ lrc) != 0) return ISO7816_T1_EDC;
     }
     return ISO7816_OK;
 }
 
-static iso7816_status_t t1_send_r(iso7816_t *d, uint8_t n_r, uint8_t err)
+static iso7816_status_t t1_send_r(iso7816_t *dev, uint8_t nr, uint8_t err_code)
 {
-    uint8_t pcb = (uint8_t)(0x80 | ((n_r & 1) << 5) | (err & 0x1F));
-    return t1_send_block(d, 0x00, pcb, NULL, 0);
+    uint8_t pcb = (uint8_t)(ISO7816_T1_PCB_RBLOCK |
+                            ((nr & 1U) != 0 ? ISO7816_T1_PCB_NR_BIT : 0) |
+                            (err_code & ISO7816_T1_PCB_FUNC_MASK));
+    return t1_send_block(dev, ISO7816_T1_NAD_DEFAULT, pcb, NULL, 0);
 }
 
-static iso7816_status_t t1_send_s(iso7816_t *d, uint8_t func, bool response,
+static iso7816_status_t t1_send_s(iso7816_t *dev, uint8_t s_func, bool is_response,
                                   const uint8_t *inf, uint8_t len)
 {
-    uint8_t pcb = (uint8_t)(0xC0 | (response ? 0x20 : 0) | (func & 0x1F));
-    return t1_send_block(d, 0x00, pcb, inf, len);
+    uint8_t pcb = (uint8_t)(ISO7816_T1_PCB_SBLOCK |
+                            (is_response ? ISO7816_T1_PCB_RESP_BIT : 0) |
+                            (s_func & ISO7816_T1_PCB_FUNC_MASK));
+    return t1_send_block(dev, ISO7816_T1_NAD_DEFAULT, pcb, inf, len);
 }
 
 /* RESYNCH : max 3 tentatives (règle 6.4, cl. 11.6.3.2) */
-static iso7816_status_t t1_resynch(iso7816_t *d)
+static iso7816_status_t t1_resynch(iso7816_t *dev)
 {
-    for (int attempt = 0; attempt < 3; attempt++) {
-        iso7816_status_t st = t1_send_s(d, T1_S_RESYNCH, false, NULL, 0);
-        if (st != ISO7816_OK) return st;
-        iso7816_t1_block_t blk;
-        st = t1_recv_block(d, &blk, t1_bwt_us(d));
-        if (st == ISO7816_OK && t1_is_sblock(blk.pcb) &&
-            (blk.pcb & 0x1F) == T1_S_RESYNCH && (blk.pcb & 0x20)) {
-            d->ns_ifd = 0;
-            d->ns_card = 0;
+    for (int attempt = 0; attempt < (int)ISO7816_T1_RESYNC_MAX; attempt++) {
+        iso7816_status_t stat = t1_send_s(dev, ISO7816_T1_S_RESYNCH, false, NULL, 0);
+        if (stat != ISO7816_OK) return stat;
+        iso7816_t1_block_t block;
+        stat = t1_recv_block(dev, &block, t1_bwt_us(dev));
+        if (stat == ISO7816_OK && t1_is_sblock(block.pcb) &&
+            (block.pcb & ISO7816_T1_PCB_FUNC_MASK) == ISO7816_T1_S_RESYNCH &&
+            (block.pcb & ISO7816_T1_PCB_RESP_BIT)) {
+            dev->ns_ifd = 0;
+            dev->ns_card = 0;
             return ISO7816_OK;
         }
     }
@@ -175,155 +170,162 @@ static iso7816_status_t t1_resynch(iso7816_t *d)
 }
 
 /* Envoie la commande APDU en I-blocs chaînés si nécessaire (bit M, cl. 11.6.2.2). */
-static iso7816_status_t t1_send_apdu(iso7816_t *d, const uint8_t *cmd, size_t cmd_len)
+static iso7816_status_t t1_send_apdu(iso7816_t *dev, const uint8_t *cmd, size_t cmd_len)
 {
-    size_t off = 0;
+    size_t offset = 0;
     do {
-        size_t chunk = cmd_len - off;
-        if (chunk > d->ifsc) chunk = d->ifsc;
-        bool more = (off + chunk) < cmd_len;
-        uint8_t pcb = (uint8_t)(((d->ns_ifd & 1) << 6) | (more ? 0x20 : 0x00));
-        iso7816_status_t st = t1_send_block(d, 0x00, pcb, cmd + off, (uint8_t)chunk);
-        if (st != ISO7816_OK) return st;
-        d->ns_ifd ^= 1;
-        off += chunk;
+        size_t chunk = cmd_len - offset;
+        if (chunk > dev->ifsc) chunk = dev->ifsc;
+        bool more = (offset + chunk) < cmd_len;
+        uint8_t pcb = (uint8_t)(((dev->ns_ifd & 1U) != 0 ? ISO7816_T1_PCB_NS_BIT : 0) |
+                                (more ? ISO7816_T1_PCB_MORE_BIT : 0));
+        iso7816_status_t stat = t1_send_block(dev, ISO7816_T1_NAD_DEFAULT, pcb,
+                                               cmd + offset, (uint8_t)chunk);
+        if (stat != ISO7816_OK) return stat;
+        dev->ns_ifd ^= 1;
+        offset += chunk;
         if (more) {
             /* acquittement R(N(R) = N(S) attendu) — règle 2.2 */
-            iso7816_t1_block_t blk;
-            st = t1_recv_block(d, &blk, t1_bwt_us(d));
-            if (st != ISO7816_OK) return st;
-            if (!t1_is_rblock(blk.pcb) || ((blk.pcb >> 5) & 1) != d->ns_ifd ||
-                (blk.pcb & 0x1F) != 0) {
+            iso7816_t1_block_t block;
+            stat = t1_recv_block(dev, &block, t1_bwt_us(dev));
+            if (stat != ISO7816_OK) return stat;
+            if (!t1_is_rblock(block.pcb) ||
+                ((block.pcb & ISO7816_T1_PCB_NR_BIT) != 0) != (dev->ns_ifd != 0) ||
+                (block.pcb & ISO7816_T1_PCB_FUNC_MASK) != 0) {
                 return ISO7816_T1_SEQ;
             }
         }
-    } while (off < cmd_len);
+    } while (offset < cmd_len);
     return ISO7816_OK;
 }
 
 /* Reçoit la réponse (I-blocs jusqu'à M=0). Données accumulées dans resp. */
-static iso7816_status_t t1_recv_response(iso7816_t *d,
+static iso7816_status_t t1_recv_response(iso7816_t *dev,
                                          uint8_t *resp, size_t cap, size_t *recvd,
                                          uint16_t *sw)
 {
-    size_t n = 0;
-    uint8_t expected_ns = d->ns_card;
-    uint32_t bwt = t1_bwt_us(d);
+    size_t total_len = 0;
+    uint8_t expected_ns = dev->ns_card;
+    uint32_t bwt_us = t1_bwt_us(dev);
     int retries = 0;
 
     for (;;) {
-        iso7816_t1_block_t blk;
-        iso7816_status_t st = t1_recv_block(d, &blk, bwt);
+        iso7816_t1_block_t block;
+        iso7816_status_t stat = t1_recv_block(dev, &block, bwt_us);
 
-        if (st == ISO7816_CHAR_WT) {
+        if (stat == ISO7816_CHAR_WT) {
             /* BWT dépassé : R(N(R)) puis max 2 retries, sinon RESYNCH (règles 7.1/7.4) */
-            if (++retries > 2) {
-                iso7816_status_t rs = t1_resynch(d);
-                return (rs == ISO7816_OK) ? ISO7816_T1_BWT : rs;
+            if (++retries > (int)ISO7816_T1_MAX_RETRIES) {
+                iso7816_status_t stat_resynch = t1_resynch(dev);
+                return (stat_resynch == ISO7816_OK) ? ISO7816_T1_BWT : stat_resynch;
             }
-            st = t1_send_r(d, expected_ns, 0);
-            if (st != ISO7816_OK) return st;
+            stat = t1_send_r(dev, expected_ns, 0);
+            if (stat != ISO7816_OK) return stat;
             continue;
         }
-        if (st != ISO7816_OK) {
-            /* bloc invalide : R avec code erreur 0001, max 2 retries (règle 7.1/7.4.2) */
-            if (++retries > 2) {
-                iso7816_status_t rs = t1_resynch(d);
-                return (rs == ISO7816_OK) ? ISO7816_T1_EDC : rs;
+        if (stat != ISO7816_OK) {
+            /* bloc invalide : R avec code erreur EDC, max 2 retries (règle 7.1/7.4.2) */
+            if (++retries > (int)ISO7816_T1_MAX_RETRIES) {
+                iso7816_status_t stat_resynch = t1_resynch(dev);
+                return (stat_resynch == ISO7816_OK) ? ISO7816_T1_EDC : stat_resynch;
             }
-            st = t1_send_r(d, expected_ns, T1_R_ERR_EDC);
-            if (st != ISO7816_OK) return st;
+            stat = t1_send_r(dev, expected_ns, ISO7816_T1_R_ERR_EDC);
+            if (stat != ISO7816_OK) return stat;
             continue;
         }
         retries = 0;
 
-        if (t1_is_sblock(blk.pcb)) {
-            uint8_t func = blk.pcb & 0x1F;
-            bool is_resp = (blk.pcb & 0x20) != 0;
-            if (func == T1_S_WTX && !is_resp) {
+        if (t1_is_sblock(block.pcb)) {
+            uint8_t s_func = block.pcb & ISO7816_T1_PCB_FUNC_MASK;
+            bool is_response = (block.pcb & ISO7816_T1_PCB_RESP_BIT) != 0;
+            if (s_func == ISO7816_T1_S_WTX && !is_response) {
                 /* S(WTX request) : acquitter et étendre BWT (règle 3) */
-                iso7816_status_t s2 = t1_send_s(d, T1_S_WTX, true, blk.inf, blk.inf_len);
-                if (s2 != ISO7816_OK) return s2;
-                if (blk.inf_len >= 1) {
-                    bwt = t1_bwt_us(d) * blk.inf[0];
+                iso7816_status_t stat_resp = t1_send_s(dev, ISO7816_T1_S_WTX, true,
+                                                        block.inf, block.inf_len);
+                if (stat_resp != ISO7816_OK) return stat_resp;
+                if (block.inf_len >= 1) {
+                    bwt_us = t1_bwt_us(dev) * block.inf[0];
                 }
                 continue;
             }
-            if (func == T1_S_IFS && !is_resp) {
-                iso7816_status_t s2 = t1_send_s(d, T1_S_IFS, true, blk.inf, blk.inf_len);
-                if (s2 != ISO7816_OK) return s2;
-                if (blk.inf_len >= 1) d->ifsc = blk.inf[0];
+            if (s_func == ISO7816_T1_S_IFS && !is_response) {
+                iso7816_status_t stat_resp = t1_send_s(dev, ISO7816_T1_S_IFS, true,
+                                                        block.inf, block.inf_len);
+                if (stat_resp != ISO7816_OK) return stat_resp;
+                if (block.inf_len >= 1) dev->ifsc = block.inf[0];
                 continue;
             }
-            if (func == T1_S_ABORT && !is_resp) {
-                iso7816_status_t s2 = t1_send_s(d, T1_S_ABORT, true, NULL, 0);
-                if (s2 != ISO7816_OK) return s2;
+            if (s_func == ISO7816_T1_S_ABORT && !is_response) {
+                iso7816_status_t stat_resp = t1_send_s(dev, ISO7816_T1_S_ABORT, true, NULL, 0);
+                if (stat_resp != ISO7816_OK) return stat_resp;
                 return ISO7816_T1_SEQ;
             }
             continue;
         }
 
-        if (t1_is_rblock(blk.pcb)) {
+        if (t1_is_rblock(block.pcb)) {
             /* acquittement (ou erreur) de notre dernier bloc : on continue */
-            if ((blk.pcb & 0x1F) != 0) return ISO7816_T1_EDC;
+            if ((block.pcb & ISO7816_T1_PCB_FUNC_MASK) != 0) return ISO7816_T1_EDC;
             continue;
         }
 
-        if (t1_is_iblock(blk.pcb)) {
-            uint8_t ns = (blk.pcb >> 6) & 1;
-            if (ns != expected_ns) {
-                /* erreur de séquence : R(N(R)=attendu) code 0010 (cl. 11.3.2.2) */
-                if (++retries > 2) return ISO7816_T1_SEQ;
-                iso7816_status_t s2 = t1_send_r(d, expected_ns, T1_R_ERR_OTHER);
-                if (s2 != ISO7816_OK) return s2;
+        if (t1_is_iblock(block.pcb)) {
+            bool ns_received = (block.pcb & ISO7816_T1_PCB_NS_BIT) != 0;
+            if (ns_received != (expected_ns != 0)) {
+                /* erreur de séquence : R(N(R)=attendu) code OTHER (cl. 11.3.2.2) */
+                if (++retries > (int)ISO7816_T1_MAX_RETRIES) return ISO7816_T1_SEQ;
+                iso7816_status_t stat_resp = t1_send_r(dev, expected_ns, ISO7816_T1_R_ERR_OTHER);
+                if (stat_resp != ISO7816_OK) return stat_resp;
                 continue;
             }
-            if (n + blk.inf_len > cap) return ISO7816_GEN_SIZE;
-            memcpy(resp + n, blk.inf, blk.inf_len);
-            n += blk.inf_len;
+            if (total_len + block.inf_len > cap) return ISO7816_GEN_SIZE;
+            memcpy(resp + total_len, block.inf, block.inf_len);
+            total_len += block.inf_len;
             expected_ns ^= 1;
-            d->ns_card = expected_ns;
-            bool more = (blk.pcb & 0x20) != 0;
+            dev->ns_card = expected_ns;
+            bool more = (block.pcb & ISO7816_T1_PCB_MORE_BIT) != 0;
             /* acquittement du bloc reçu (règles 2.1/2.2) */
-            iso7816_status_t s2 = t1_send_r(d, expected_ns, 0);
-            if (s2 != ISO7816_OK) return s2;
+            iso7816_status_t stat_resp = t1_send_r(dev, expected_ns, 0);
+            if (stat_resp != ISO7816_OK) return stat_resp;
             if (!more) break;
         }
     }
 
-    if (n < 2) return ISO7816_T1_SEQ;
-    *sw = (uint16_t)((resp[n - 2] << 8) | resp[n - 1]);
-    *recvd = n - 2;
+    if (total_len < ISO7816_SW_LEN) return ISO7816_T1_SEQ;
+    *sw = (uint16_t)((resp[total_len - ISO7816_SW_LEN] << 8) | resp[total_len - 1]);
+    *recvd = total_len - ISO7816_SW_LEN;
     return ISO7816_OK;
 }
 
-iso7816_status_t iso7816_t1_exchange(iso7816_t *d,
+iso7816_status_t iso7816_t1_exchange(iso7816_t *dev,
                                      const uint8_t *cmd, size_t cmd_len,
                                      uint8_t *resp, size_t resp_cap,
                                      size_t *resp_len, uint16_t *sw)
 {
-    if (!d || !d->active || d->protocol != 1) return ISO7816_GEN_STATE;
+    if (!dev || !dev->active || dev->protocol != 1) return ISO7816_GEN_STATE;
 
-    iso7816_status_t st = t1_send_apdu(d, cmd, cmd_len);
-    if (st != ISO7816_OK) return st;
+    iso7816_status_t stat = t1_send_apdu(dev, cmd, cmd_len);
+    if (stat != ISO7816_OK) return stat;
 
     size_t recvd = 0;
     uint16_t cur_sw = 0;
-    st = t1_recv_response(d, resp, resp_cap, &recvd, &cur_sw);
-    if (st != ISO7816_OK) return st;
+    stat = t1_recv_response(dev, resp, resp_cap, &recvd, &cur_sw);
+    if (stat != ISO7816_OK) return stat;
 
     /* '61xx' : GET RESPONSE par T=1 (les données suivent en I-blocs chaînés) */
-    unsigned guard = 0;
-    while ((cur_sw & 0xFF00) == 0x6100 && guard++ < 16) {
-        uint8_t more = (uint8_t)(cur_sw & 0xFF);   /* 0 = 256 */
-        uint8_t p3 = more;                          /* P3 = octets restants demandés */
-        uint8_t gr[5] = { 0x00, 0xC0, 0x00, 0x00, p3 };
-        st = t1_send_apdu(d, gr, sizeof(gr));
-        if (st != ISO7816_OK) return st;
-        size_t rl = 0;
-        st = t1_recv_response(d, resp + recvd, resp_cap - recvd, &rl, &cur_sw);
-        if (st != ISO7816_OK) return st;
-        recvd += rl;
+    unsigned gr_count = 0;
+    while ((cur_sw & ISO7816_SW1_MASK) == (ISO7816_SW1_GET_RESPONSE << 8) &&
+           gr_count++ < ISO7816_T1_MAX_GET_RESPONSE) {
+        uint8_t more = (uint8_t)(cur_sw & ISO7816_SW2_MASK);   /* 0 = 256 */
+        uint8_t p3 = more;                                      /* P3 = octets restants demandés */
+        uint8_t get_resp[ISO7816_T0_HEADER_LEN] =
+            { ISO7816_GET_RESPONSE_CLA, ISO7816_INS_GET_RESPONSE, 0x00, 0x00, p3 };
+        stat = t1_send_apdu(dev, get_resp, sizeof(get_resp));
+        if (stat != ISO7816_OK) return stat;
+        size_t part_len = 0;
+        stat = t1_recv_response(dev, resp + recvd, resp_cap - recvd, &part_len, &cur_sw);
+        if (stat != ISO7816_OK) return stat;
+        recvd += part_len;
     }
 
     *resp_len = recvd;
