@@ -4,7 +4,7 @@
 #include "pc_card.h"
 #include "test_main.h"
 
-/* ATR minimal : T0 = 0x00 -> T=0 par défaut */
+/* Minimal ATR: T0 = 0x00 -> T=0 by default */
 static const uint8_t ATR_SIMPLE[] = { 0x00 };
 
 int main(void)
@@ -23,7 +23,7 @@ int main(void)
     CHECK_EQ(iso7816_get_protocol(&dev), 0);
     CHECK_EQ(iso7816_etu_us(&dev), ISO7816_F_DEFAULT);   /* F=372, D=1, f=1 MHz */
 
-    /* émission d'un caractère vers la carte : la carte sim doit le recevoir */
+    /* transmit a character to the card: the sim card must receive it */
     {
         uint8_t rx_log[16];
         size_t rx_len_before = pc_card_rxlog(card, rx_log, sizeof(rx_log));
@@ -34,7 +34,7 @@ int main(void)
         CHECK_EQ(rx_log2[rx_len_after - 1], 0xA4);
     }
 
-    /* réception d'un caractère émis par la carte */
+    /* receive a character sent by the card */
     {
         uint8_t byte = 0xFF;
         uint8_t send[] = { 0x5A };
@@ -43,7 +43,7 @@ int main(void)
         CHECK_EQ(byte, 0x5A);
     }
 
-    /* parité fausse côté carte -> l'IFD émet le signal d'erreur (cl. 7.3) */
+    /* wrong parity card-side -> the IFD sends the error signal (cl. 7.3) */
     {
         uint8_t byte = 0;
         uint8_t send[] = { 0x5A };
@@ -53,7 +53,7 @@ int main(void)
         CHECK(pc_card_ifd_err_signals(card) >= 1);
     }
 
-    /* timeout WT : carte muette */
+    /* WT timeout: silent card */
     {
         uint8_t byte;
         CHECK_EQ(iso7816_char_rx(&dev, &byte, ISO7816_T0_WT_ETU_PER_WI * iso7816_etu_us(&dev)), ISO7816_CHAR_WT);

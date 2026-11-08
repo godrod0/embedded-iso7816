@@ -1,15 +1,16 @@
-/*
- * iso7816_hal_stm32u5.c — implémentation STM32U5 de iso7816_hal_t,
- * basée sur la bibliothèque SMARTCARD de la HAL STM32 (stm32u5xx_hal_smartcard.h).
+/**
+ * @file iso7816_hal_stm32u5.c
+ * @brief STM32U5 implementation of iso7816_hal_t, based on the STM32 HAL
+ * SMARTCARD library (stm32u5xx_hal_smartcard.h).
  *
- * Le USART en mode smartcard gère :
- *   - C7 I/O sur TX (open-drain) : trames complètes via HAL_SMARTCARD_Transmit/Receive,
- *     parité paire + NACK automatique (cl. 7.3) et guard time (USART_GTPR) en matériel ;
- *   - C3 CLK sur CK : fréquence = f_USART / (2 * Prescaler).
+ * The USART in smartcard mode handles:
+ *   - C7 I/O on TX (open-drain): full frames via HAL_SMARTCARD_Transmit/Receive,
+ *     even parity + automatic NACK (cl. 7.3) and guard time (USART_GTPR) in hardware;
+ *   - C3 CLK on CK: frequency = f_USART / (2 * Prescaler).
  *
- * Non compilé par défaut (option CMake ISO7816_BUILD_STM32U5_PORT=ON,
- * à activer dans un projet STM32Cube avec le HAL STM32U5 disponible,
- * incluant stm32u5xx_hal_smartcard.c).
+ * Not built by default (CMake option ISO7816_BUILD_STM32U5_PORT=ON, to enable
+ * in an STM32Cube project with the STM32U5 HAL available, including
+ * stm32u5xx_hal_smartcard.c).
  */
 #include "iso7816_hal_stm32u5.h"
 
@@ -20,12 +21,12 @@ typedef struct {
     iso7816_hal_t hal;
     SMARTCARD_HandleTypeDef hsc;
     uint32_t usart_clk_hz;   /* horloge de l'USART (APB) */
-    uint32_t clk_hz;         /* fréquence CK courante */
+    uint32_t clk_hz;         /* current CK frequency */
 } stm32u5_ctx_t;
 
 static stm32u5_ctx_t g_ctx;
 
-/* ---------- alimentation / reset (GPIO, inchangé) ---------- */
+/* ---------- power / reset (GPIO, unchanged) ---------- */
 
 static void vcc_select(stm32u5_ctx_t *port_ctx, iso7816_class_t cls)
 {
@@ -62,7 +63,7 @@ static void p_rst(void *ctx, bool high)
 
 /* ---------- USART smartcard ---------- */
 
-/* Rétablit TX en AF open-drain (mode smartcard) si la broche est passée en GPIO. */
+/* Restores TX to AF open-drain (smartcard mode) if the pin was switched to GPIO. */
 static void tx_ensure_af(stm32u5_ctx_t *port_ctx)
 {
     GPIO_InitTypeDef gpio_init = { 0 };
@@ -74,7 +75,7 @@ static void tx_ensure_af(stm32u5_ctx_t *port_ctx)
     HAL_GPIO_Init(port_ctx->cfg.gpio_tx, &gpio_init);
 }
 
-/* Callback HAL appelé par HAL_SMARTCARD_Init : horloge USART + GPIO AF TX/CK. */
+/* HAL callback invoked by HAL_SMARTCARD_Init: USART clock + GPIO AF TX/CK. */
 void HAL_SMARTCARD_MspInit(SMARTCARD_HandleTypeDef *hsc)
 {
     (void)hsc;
@@ -114,7 +115,7 @@ static int p_init(void *ctx)
 {
     stm32u5_ctx_t *port_ctx = ctx;
 
-    /* RST à L, VCC coupé */
+    /* RST low, VCC off */
     GPIO_InitTypeDef gpio_init = { 0 };
     gpio_init.Mode = GPIO_MODE_OUTPUT_PP;
     gpio_init.Pull = GPIO_NOPULL;
@@ -125,7 +126,7 @@ static int p_init(void *ctx)
     vcc_select(port_ctx, ISO7816_CLASS_A);
     p_vcc_off(ctx);
 
-    /* USART en mode smartcard : trame 9 bits (8 données + parité paire), 1,5 stop */
+    /* USART in smartcard mode: 9-bit frame (8 data + even parity), 1.5 stop bits */
     port_ctx->hsc.Instance = port_ctx->cfg.usart;
     port_ctx->hsc.Init.WordLength = SMARTCARD_WORDLENGTH_9B;
     port_ctx->hsc.Init.StopBits = SMARTCARD_STOPBITS_1_5;
@@ -141,7 +142,7 @@ static int p_init(void *ctx)
     __HAL_SMARTCARD_ENABLE(&port_ctx->hsc);
 
     /* horloge de l'USART (APB) pour le calcul du prescaler de CK :
-       USART1/USART6 sur APB2, les autres sur APB1 (à ajuster selon le modèle) */
+       USART1/USART6 on APB2, others on APB1 (adjust per model) */
 #if defined(USART6)
     if (port_ctx->cfg.usart == USART1 || port_ctx->cfg.usart == USART6)
         port_ctx->usart_clk_hz = HAL_RCC_GetPCLK2Freq();
@@ -157,7 +158,7 @@ static int p_init(void *ctx)
     /* base de temps 1 MHz */
     if (port_ctx->cfg.h_us) {
         uint32_t apb_clk_hz = HAL_RCC_GetPCLK1Freq();
-        /* suppose TIM sur APB1 ; à ajuster si APB2 */
+        /* assume TIM on APB1; adjust if APB2 */
         port_ctx->cfg.h_us->Init.Prescaler = (apb_clk_hz / ISO7816_PORT_TIME_BASE_HZ) - 1U;
         port_ctx->cfg.h_us->Init.CounterMode = TIM_COUNTERMODE_UP;
         port_ctx->cfg.h_us->Init.Period = ISO7816_PORT_TIM_PERIOD;
@@ -169,13 +170,13 @@ static int p_init(void *ctx)
 
 static void p_deinit(void *ctx) { (void)ctx; }
 
-/* C3 CLK : CK = f_USART / (2 * Prescaler). Renvoie la fréquence réelle. */
+/* C3 CLK: CK = f_USART / (2 * Prescaler). Returns the actual frequency. */
 static uint32_t p_clk_start(void *ctx, uint32_t hz)
 {
     stm32u5_ctx_t *port_ctx = ctx;
     if (!port_ctx->cfg.usart || hz == 0) return 0;
 
-    /* CK repasse en AF (après un éventuel clock stop en GPIO) */
+    /* CK back to AF (after a possible clock stop in GPIO) */
     GPIO_InitTypeDef gpio_init = { 0 };
     gpio_init.Mode = GPIO_MODE_AF_PP;
     gpio_init.Pull = GPIO_NOPULL;
@@ -196,7 +197,7 @@ static uint32_t p_clk_start(void *ctx, uint32_t hz)
     return port_ctx->clk_hz;
 }
 
-/* Arrêt d'horloge (cl. 6.3.2) : CK basculée en GPIO et forcée au niveau demandé. */
+/* Clock stop (cl. 6.3.2): CK switched to GPIO and forced to the requested level. */
 static void p_clk_stop(void *ctx, bool keep_high)
 {
     stm32u5_ctx_t *port_ctx = ctx;
@@ -210,9 +211,9 @@ static void p_clk_stop(void *ctx, bool keep_high)
                       keep_high ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
-/* Émission d'une trame complète (start + 8 bits + parité) par le périphérique.
-   Renvoie ISO7816_CHAR_PARITY si la carte a émis le signal d'erreur (NACK)
-   pendant le guard time (cl. 7.3). */
+/* Transmits a full frame (start + 8 bits + parity) via the peripheral.
+   Returns ISO7816_CHAR_PARITY if the card sent the error signal (NACK)
+   during the guard time (cl. 7.3). */
 static iso7816_status_t p_tx_byte(void *ctx, uint8_t byte)
 {
     stm32u5_ctx_t *port_ctx = ctx;
@@ -222,13 +223,13 @@ static iso7816_status_t p_tx_byte(void *ctx, uint8_t byte)
     if (__HAL_SMARTCARD_GET_FLAG(&port_ctx->hsc, SMARTCARD_FLAG_PERR) ||
         (HAL_SMARTCARD_GetError(&port_ctx->hsc) & SMARTCARD_ERROR_PE)) {
         __HAL_SMARTCARD_CLEAR_PEFLAG(&port_ctx->hsc);
-        return ISO7816_CHAR_PARITY;   /* NACK reçu : répéter le caractère (cl. 7.3) */
+        return ISO7816_CHAR_PARITY;   /* NACK received: repeat the character (cl. 7.3) */
     }
     return (hal_stat == HAL_OK) ? ISO7816_OK : ISO7816_GEN_HAL;
 }
 
-/* Réception d'une trame complète. timeout_us = WT ;
-   parité fausse -> le périphérique émet le NACK automatiquement et renvoie
+/* Receives a full frame. timeout_us = WT ;
+   wrong parity -> the peripheral automatically sends the NACK and returns
    ISO7816_CHAR_PARITY. */
 static iso7816_status_t p_rx_byte(void *ctx, uint8_t *byte, uint32_t timeout_us)
 {
@@ -241,19 +242,19 @@ static iso7816_status_t p_rx_byte(void *ctx, uint8_t *byte, uint32_t timeout_us)
     if (__HAL_SMARTCARD_GET_FLAG(&port_ctx->hsc, SMARTCARD_FLAG_PERR) ||
         (HAL_SMARTCARD_GetError(&port_ctx->hsc) & SMARTCARD_ERROR_PE)) {
         __HAL_SMARTCARD_CLEAR_PEFLAG(&port_ctx->hsc);
-        return ISO7816_CHAR_PARITY;   /* NACK émis automatiquement (cl. 7.3) */
+        return ISO7816_CHAR_PARITY;   /* NACK sent automatically (cl. 7.3) */
     }
     return (hal_stat == HAL_OK) ? ISO7816_OK : ISO7816_GEN_HAL;
 }
 
-/* Lecture de la ligne I/O (IDR lisible même en AF). */
+/* Reads the I/O line (IDR readable even in AF mode). */
 static bool p_io_read(void *ctx)
 {
     stm32u5_ctx_t *port_ctx = ctx;
     return HAL_GPIO_ReadPin(port_ctx->cfg.gpio_tx, port_ctx->cfg.pin_tx) == GPIO_PIN_SET;
 }
 
-/* Force la ligne I/O (désactivation, cl. 6.4) : TX passée en GPIO push-pull. */
+/* Forces the I/O line (deactivation, cl. 6.4): TX switched to GPIO push-pull. */
 static void p_io_drive(void *ctx, bool high)
 {
     stm32u5_ctx_t *port_ctx = ctx;
@@ -278,7 +279,7 @@ static void p_delay_us(void *ctx, uint32_t us)
 {
     uint32_t start_us = p_micros(ctx);
     while ((uint32_t)(p_micros(ctx) - start_us) < us) {
-        /* busy wait ; le timer 1 MHz a une résolution de 1 µs */
+        /* busy wait; the 1 MHz timer has a 1 µs resolution */
     }
 }
 

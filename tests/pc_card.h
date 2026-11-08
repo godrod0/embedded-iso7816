@@ -1,6 +1,7 @@
 /*
- * pc_card.h — port PC pour tests : mock HAL (ligne I/O virtuelle, temps virtuel)
- * + carte à puce simulée (ATR, PPS, T=0, T=1) pilotée par script de test.
+ * @file pc_card.h
+ * @brief PC port for tests: mock HAL (virtual I/O line, virtual time)
+ * + simulated smart card (ATR, PPS, T=0, T=1) driven by the test script.
  */
 #pragma once
 
@@ -16,38 +17,38 @@ extern "C" {
 
 typedef struct pc_card pc_card_t;
 
-/* Callback de commande : reçoit l'APDU complète (header + data) côté carte. */
+/* Command callback: receives the complete APDU (header + data) card-side. */
 typedef void (*pc_card_cmd_fn)(pc_card_t *card, const uint8_t *apdu, size_t len);
 
 pc_card_t *pc_card_create(void);
 void       pc_card_destroy(pc_card_t *card);
 
-/* La HAL à injecter dans iso7816_init(). */
+/* The HAL to inject into iso7816_init(). */
 const iso7816_hal_t *pc_card_hal(pc_card_t *card);
 
-/* Attache le contexte bibliothèque (le mock lit F/D/f/convention courants). */
+/* Attaches the library context (the mock reads current F/D/f/convention). */
 void pc_card_attach(pc_card_t *card, iso7816_t *dev);
 
-/* Configuration de la carte simulée. */
+/* Simulated card configuration. */
 void pc_card_set_atr(pc_card_t *card, uint8_t ts, const uint8_t *atr, size_t len);
-void pc_card_set_protocol(pc_card_t *card, uint8_t protocol);      /* 0 ou 1 : protocole attendu après l'ATR */
-void pc_card_set_pps_accept(pc_card_t *card, bool accept);  /* écho du PPS request */
+void pc_card_set_protocol(pc_card_t *card, uint8_t protocol);      /* 0 or 1: protocol expected after the ATR */
+void pc_card_set_pps_accept(pc_card_t *card, bool accept);  /* echo of the PPS request */
 void pc_card_set_cmd_handler(pc_card_t *card, uint8_t ins, bool incoming, pc_card_cmd_fn fn);
-void pc_card_set_silent(pc_card_t *card, bool silent);      /* carte muette (pas d'ATR) */
-void pc_card_corrupt_next_tx(pc_card_t *card);              /* prochaine trame émise : parité faux */
+void pc_card_set_silent(pc_card_t *card, bool silent);      /* silent card (no ATR) */
+void pc_card_corrupt_next_tx(pc_card_t *card);              /* next transmitted frame: wrong parity */
 
-/* File d'émission carte (octets TPDU que la carte va envoyer). */
+/* Card transmit queue (TPDU bytes the card will send). */
 void pc_card_queue_tx(pc_card_t *card, const uint8_t *data, size_t len);
 void pc_card_queue_sw(pc_card_t *card, uint16_t sw);
 
-/* Helpers de construction de réponses. */
+/* Response-building helpers. */
 void pc_card_t0_queue_ack_all(pc_card_t *card, uint8_t ins);            /* ACK = INS */
 void pc_card_t0_queue_data_sw(pc_card_t *card, const uint8_t *data, size_t len, uint16_t sw);
 void pc_card_t1_queue_response(pc_card_t *card, const uint8_t *data, size_t len, uint16_t sw);
 
-/* Inspection pour les assertions. */
-size_t pc_card_rxlog(const pc_card_t *card, uint8_t *out, size_t cap); /* octets reçus par la carte */
-uint32_t pc_card_ifd_err_signals(const pc_card_t *card);                /* signaux d'erreur émis par l'IFD */
+/* Inspection for assertions. */
+size_t pc_card_rxlog(const pc_card_t *card, uint8_t *out, size_t cap); /* bytes received by the card */
+uint32_t pc_card_ifd_err_signals(const pc_card_t *card);                /* error signals sent by the IFD */
 uint32_t pc_card_now_us(const pc_card_t *card);
 
 #ifdef __cplusplus

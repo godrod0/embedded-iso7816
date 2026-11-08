@@ -3,7 +3,7 @@
 #include "pc_card.h"
 #include "test_main.h"
 
-static const uint8_t ATR_T0[] = { 0x00 };   /* T=0 par défaut */
+static const uint8_t ATR_T0[] = { 0x00 };   /* T=0 by default */
 
 static void h_select(pc_card_t *c, const uint8_t *apdu, size_t len)
 {
@@ -31,7 +31,7 @@ static void h_read(pc_card_t *c, const uint8_t *apdu, size_t len)
         pc_card_t0_queue_data_sw(c, part, sizeof(part), 0x6105);
         return;
     }
-    if (apdu[2] == 0x02 && apdu[4] != 0x04) {   /* '6C 04' : réémission avec P3=SW2 */
+    if (apdu[2] == 0x02 && apdu[4] != 0x04) {   /* '6C 04': retransmission with P3=SW2 */
         g_6c_count++;
         pc_card_queue_sw(c, 0x6C04);
         return;
@@ -47,7 +47,7 @@ static void h_read(pc_card_t *c, const uint8_t *apdu, size_t len)
     pc_card_t0_queue_data_sw(c, data, sizeof(data), ISO7816_SW_OK);
 }
 
-/* UPDATE BINARY (entrant) : ACK + données reçues + 9000 */
+/* UPDATE BINARY (incoming): ACK + data received + 9000 */
 static void h_update(pc_card_t *c, const uint8_t *apdu, size_t len)
 {
     (void)apdu;
@@ -94,7 +94,7 @@ int main(void)
         CHECK_EQ(resp[3], 0xEF);
     }
 
-    /* cas 2S avec '61 05' -> GET RESPONSE (cl. 12.2) */
+    /* case 2S with '61 05' -> GET RESPONSE (cl. 12.2) */
     {
         uint8_t cmd[] = { 0x00, 0xB0, 0x01, 0x00, 0x07 };
         CHECK_EQ(iso7816_exchange(&dev, cmd, sizeof(cmd), resp, sizeof(resp), &rlen, &sw), ISO7816_OK);
@@ -105,7 +105,7 @@ int main(void)
         CHECK_EQ(resp[6], 5);
     }
 
-    /* cas 2S avec '6C 04' -> réémission avec P3=SW2 */
+    /* case 2S with '6C 04' -> retransmission with P3=SW2 */
     {
         uint8_t cmd[] = { 0x00, 0xB0, 0x02, 0x00, 0x09 };
         CHECK_EQ(iso7816_exchange(&dev, cmd, sizeof(cmd), resp, sizeof(resp), &rlen, &sw), ISO7816_OK);
@@ -115,14 +115,14 @@ int main(void)
         CHECK(g_6c_count >= 1);
     }
 
-    /* cas 3S : commande entrante, la carte a reçu header + data */
+    /* case 3S: incoming command, the card received header + data */
     {
         uint8_t cmd[] = { 0x00, 0xD0, 0x00, 0x00, 0x02, 0x11, 0x22 };
         CHECK_EQ(iso7816_exchange(&dev, cmd, sizeof(cmd), resp, sizeof(resp), &rlen, &sw), ISO7816_OK);
         CHECK_EQ(sw, ISO7816_SW_OK);
         uint8_t rx_log[64];
         size_t rx_len = pc_card_rxlog(card, rx_log, sizeof(rx_log));
-        /* les 7 derniers octets reçus par la carte = l'APDU cas 3S */
+        /* the last 7 bytes received by the card = the case-3S APDU */
         CHECK(rx_len >= 7);
         CHECK_EQ(rx_log[rx_len - 7], 0x00);
         CHECK_EQ(rx_log[rx_len - 6], 0xD0);
@@ -132,12 +132,12 @@ int main(void)
 
     /* cas 4S : entrant + sortant */
     {
-        uint8_t cmd[] = { 0x00, 0xB0, 0x00, 0x00, 0x00, 0x00, 0x04 }; /* P3=0 entrant, Le=4 */
-        /* ce handler n'est pas enregistré comme entrant : 6D00 attendu côté handler... on ignore */
+        uint8_t cmd[] = { 0x00, 0xB0, 0x00, 0x00, 0x00, 0x00, 0x04 }; /* P3=0 incoming, Le=4 */
+        /* this handler is not registered as incoming: 6D00 expected handler-side... ignore */
         (void)cmd;
     }
 
-    /* exchange avant activate -> erreur d'état (nouveau device) */
+    /* exchange before activate -> state error (new device) */
     {
         iso7816_t dev2;
         iso7816_config_t cfg2 = { .hal = pc_card_hal(card), .clk_hz = ISO7816_CLK_RESET_MIN_HZ };

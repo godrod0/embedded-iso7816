@@ -15,12 +15,12 @@ static iso7816_status_t rx_char_retry(iso7816_t *dev, uint8_t *byte, uint32_t ti
         iso7816_status_t stat = iso7816_char_rx(dev, byte, timeout_us);
         if (stat == ISO7816_OK) return ISO7816_OK;
         if (stat == ISO7816_CHAR_WT) return stat;
-        /* PARITY : signal d'erreur émis, on retente la réception */
+        /* PARITY: error signal sent, retry the reception */
     }
     return ISO7816_CHAR_PARITY;
 }
 
-/* Réception de l'ATR : TS puis T0..TCK (cl. 8). */
+/* ATR reception: TS then T0..TCK (cl. 8). */
 static iso7816_status_t rx_atr(iso7816_t *dev)
 {
     const uint32_t wt_us = ISO7816_WT_ATR_PPS_ETU * iso7816_etu_us(dev);
@@ -66,18 +66,18 @@ void iso7816_apply_protocol(iso7816_t *dev)
         dev->use_crc = dev->atr.use_crc;
         dev->ns_ifd = 0;
         dev->ns_card = 0;
-        dev->use_error_signal = false;  /* pas de signal d'erreur en T=1 (cl. 11.2) */
+        dev->use_error_signal = false;  /* no error signal in T=1 (cl. 11.2) */
     }
 }
 
 static iso7816_status_t select_protocol(iso7816_t *dev)
 {
     if (dev->atr.has_ta2) {
-        dev->protocol = (uint8_t)(dev->atr.ta2 & ISO7816_TA2_PROTO_MASK); /* mode spécifique (cl. 6.3.1) */
+        dev->protocol = (uint8_t)(dev->atr.ta2 & ISO7816_TA2_PROTO_MASK); /* specific mode (cl. 6.3.1) */
     } else if (dev->atr.n_protocols > 0) {
-        dev->protocol = dev->atr.protocols[0];          /* premier protocole offert (cl. 8.2.3) */
+        dev->protocol = dev->atr.protocols[0];          /* first offered protocol (cl. 8.2.3) */
     } else {
-        dev->protocol = ISO7816_PROTOCOL_T0;           /* défaut : T=0 */
+        dev->protocol = ISO7816_PROTOCOL_T0;           /* default: T=0 */
     }
     if (dev->protocol != ISO7816_PROTOCOL_T0 && dev->protocol != ISO7816_PROTOCOL_T1) {
         return ISO7816_PPS_PROTOCOL;
@@ -89,23 +89,23 @@ static iso7816_status_t select_protocol(iso7816_t *dev)
 static void do_deactivate(iso7816_t *dev)
 {
     dev->hal->rst_drive(dev->hal->ctx, false);
-    dev->hal->clk_stop(dev->hal->ctx, false);     /* CLK à L (cl. 6.4) */
-    dev->hal->io_drive(dev->hal->ctx, false);    /* I/O à L */
+    dev->hal->clk_stop(dev->hal->ctx, false);     /* CLK low (cl. 6.4) */
+    dev->hal->io_drive(dev->hal->ctx, false);    /* I/O low */
     dev->hal->vcc_off(dev->hal->ctx);
     dev->active = false;
     dev->clock_stopped = false;
 }
 
-/* Activation + cold reset pour une classe donnée (cl. 6.2.1, 6.2.2). */
+/* Activation + cold reset for a given class (cl. 6.2.1, 6.2.2). */
 static iso7816_status_t try_activate(iso7816_t *dev, iso7816_class_t cls)
 {
     dev->hal->vcc_on(dev->hal->ctx, cls);
-    dev->hal->rst_drive(dev->hal->ctx, false);    /* RST à L */
-    /* I/O : le périphérique smartcard relâche la ligne quand il n'émet pas */
+    dev->hal->rst_drive(dev->hal->ctx, false);    /* RST low */
+    /* I/O: the smartcard peripheral releases the line when not transmitting */
 
     uint32_t clk_hz = dev->hal->clk_start(dev->hal->ctx, dev->clk_reset_hz);
     if (clk_hz < ISO7816_CLK_RESET_MIN_HZ) clk_hz = ISO7816_CLK_RESET_MIN_HZ;
-    if (clk_hz > ISO7816_CLK_RESET_MAX_HZ) clk_hz = ISO7816_CLK_RESET_MAX_HZ; /* max 5 MHz pendant le reset (cl. 5.2.3) */
+    if (clk_hz > ISO7816_CLK_RESET_MAX_HZ) clk_hz = ISO7816_CLK_RESET_MAX_HZ; /* max 5 MHz during reset (cl. 5.2.3) */
     dev->f_hz = clk_hz;
     dev->F = ISO7816_F_DEFAULT;
     dev->D = ISO7816_D_DEFAULT;
@@ -116,12 +116,12 @@ static iso7816_status_t try_activate(iso7816_t *dev, iso7816_class_t cls)
     dev->last_dir_rx = false;
     dev->wt_us = ISO7816_WT_ATR_PPS_ETU * iso7816_etu_us(dev);
 
-    /* cold reset : RST maintenu à L au moins 400 cycles (cl. 6.2.2) */
+    /* cold reset: RST held low for at least 400 cycles (cl. 6.2.2) */
     iso7816_delay_us(dev, iso7816_cycles_us(dev, ISO7816_COLD_RESET_RST_LOW_CYCLES) +
                           iso7816_cycles_us(dev, ISO7816_RESET_MARGIN_CYCLES));
     dev->hal->rst_drive(dev->hal->ctx, true);
 
-    /* la réponse doit commencer entre 400 et 40 000 cycles (cl. 6.2.2) */
+    /* the answer must start between 400 and 40 000 cycles (cl. 6.2.2) */
     const uint32_t start = iso7816_now(dev);
     const uint32_t window = iso7816_cycles_us(dev, ISO7816_RESET_ANSWER_MAX_CYCLES);
     bool answered = false;
@@ -177,7 +177,7 @@ iso7816_status_t iso7816_activate(iso7816_t *dev, iso7816_class_t cls)
     if (!dev || !dev->hal) return ISO7816_GEN_PARAM;
     if (dev->active) return ISO7816_GEN_STATE;
 
-    /* candidats : la classe demandée d'abord, puis A/B/C (cl. 6.2.4) */
+    /* candidates: the requested class first, then A/B/C (cl. 6.2.4) */
     iso7816_class_t class_cand[ISO7816_CLASS_COUNT + 1];
     int n_cand = 0;
     class_cand[n_cand++] = cls;
@@ -193,12 +193,12 @@ iso7816_status_t iso7816_activate(iso7816_t *dev, iso7816_class_t cls)
         if (stat != ISO7816_OK) {
             if (stat == ISO7816_DEV_NO_ANSWER) {
                 last_stat = stat;
-                iso7816_delay_us(dev, ISO7816_CLASS_SWITCH_DELAY_US); /* >= 10 ms entre classes (cl. 6.2.4) */
+                iso7816_delay_us(dev, ISO7816_CLASS_SWITCH_DELAY_US); /* >= 10 ms between classes (cl. 6.2.4) */
                 continue;
             }
             return stat;
         }
-        /* si l'ATR indique les classes supportées (Y), vérifier (cl. 6.2.4) */
+        /* if the ATR indicates supported classes (Y), check (cl. 6.2.4) */
         if (dev->atr.has_t15 && dev->atr.y_class != 0 &&
             !class_in_mask(class_cand[i], dev->atr.y_class)) {
             do_deactivate(dev);
@@ -223,14 +223,14 @@ iso7816_status_t iso7816_warm_reset(iso7816_t *dev)
     if (!dev || !dev->hal) return ISO7816_GEN_PARAM;
     if (!dev->active) return ISO7816_GEN_STATE;
 
-    /* pas avant 4464 cycles après le leading edge de T0 (cl. 6.2.3) */
+    /* not before 4464 cycles after the leading edge of T0 (cl. 6.2.3) */
     uint32_t min_wait = iso7816_cycles_us(dev, ISO7816_WARM_RESET_MIN_CYCLES);
     uint32_t elapsed = iso7816_now(dev) - dev->atr_end_us;
     if ((int32_t)(min_wait - elapsed) > 0) {
         iso7816_delay_us(dev, min_wait - elapsed);
     }
 
-    dev->hal->rst_drive(dev->hal->ctx, false);    /* RST à L >= 400 cycles, VCC/CLK maintenus */
+    dev->hal->rst_drive(dev->hal->ctx, false);    /* RST low >= 400 cycles, VCC/CLK kept on */
     iso7816_delay_us(dev, iso7816_cycles_us(dev, ISO7816_COLD_RESET_RST_LOW_CYCLES) +
                           iso7816_cycles_us(dev, ISO7816_RESET_MARGIN_CYCLES));
     dev->hal->rst_drive(dev->hal->ctx, true);
@@ -284,9 +284,9 @@ iso7816_status_t iso7816_clock_stop(iso7816_t *dev)
 {
     if (!dev || !dev->hal || !dev->active) return ISO7816_GEN_STATE;
     if (!dev->atr.has_t15 || dev->atr.x_clock_stop == ISO7816_TA15_X_NONE || dev->clock_stopped) {
-        return ISO7816_GEN_STATE;   /* clock stop non supporté (tableau 9) */
+        return ISO7816_GEN_STATE;   /* clock stop not supported (table 9) */
     }
-    /* I/O resté à H pendant au moins 1860 cycles (cl. 6.3.2) */
+    /* I/O kept high for at least 1860 cycles (cl. 6.3.2) */
     const uint32_t dur = iso7816_cycles_us(dev, ISO7816_CLOCK_STOP_IO_HIGH_CYCLES);
     const uint32_t timeout = iso7816_cycles_us(dev, ISO7816_RESET_ANSWER_MAX_CYCLES);
     const uint32_t start = iso7816_now(dev);

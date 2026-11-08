@@ -5,13 +5,13 @@
 
 static const uint8_t ATR_T0[] = { 0x00 };
 
-/* T=15, Y = classe B seule : T0=0x80, TD1=0x3F, TA=0x42, TB=0x00, TCK=0xFD */
+/* T=15, Y = class B only: T0=0x80, TD1=0x3F, TA=0x42, TB=0x00, TCK=0xFD */
 static const uint8_t ATR_CLASS_B[] = { 0x80, 0x3F, 0x42, 0x00, 0xFD };
 
-/* T=15, X=3 (clock stop sans préférence), Y = A seule : T0=0x80, TD1=0x3F, TA=0xC1, TB=0x00, TCK=0x7E */
+/* T=15, X=3 (clock stop no preference), Y = A only: T0=0x80, TD1=0x3F, TA=0xC1, TB=0x00, TCK=0x7E */
 static const uint8_t ATR_CLKSTOP[] = { 0x80, 0x3F, 0xC1, 0x00, 0x7E };
 
-/* T=15, X=0 (pas de clock stop), Y = A seule : T0=0x80, TD1=0x3F, TA=0x01, TB=0x00, TCK=0xBE */
+/* T=15, X=0 (no clock stop), Y = A only: T0=0x80, TD1=0x3F, TA=0x01, TB=0x00, TCK=0xBE */
 static const uint8_t ATR_NOCLKSTOP[] = { 0x80, 0x3F, 0x01, 0x00, 0xBE };
 
 static void h_ok(pc_card_t *c, const uint8_t *apdu, size_t len)
@@ -22,7 +22,7 @@ static void h_ok(pc_card_t *c, const uint8_t *apdu, size_t len)
 
 int main(void)
 {
-    /* --- carte muette : pas de réponse au reset --- */
+    /* --- silent card: no answer to reset --- */
     {
         pc_card_t *card = pc_card_create();
         pc_card_set_silent(card, true);
@@ -35,7 +35,7 @@ int main(void)
         pc_card_destroy(card);
     }
 
-    /* --- sélection de classe : on demande A, la carte n'accepte que B --- */
+    /* --- class selection: A requested, the card only accepts B --- */
     {
         pc_card_t *card = pc_card_create();
         pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_CLASS_B, sizeof(ATR_CLASS_B));
@@ -45,7 +45,7 @@ int main(void)
         CHECK_EQ(iso7816_init(&dev, pc_card_hal(card), &cfg), ISO7816_OK);
         pc_card_attach(card, &dev);
         CHECK_EQ(iso7816_activate(&dev, ISO7816_CLASS_A), ISO7816_OK);
-        CHECK_EQ(dev.cls, ISO7816_CLASS_B);          /* repli sur la classe B (cl. 6.2.4) */
+        CHECK_EQ(dev.cls, ISO7816_CLASS_B);          /* fallback to class B (cl. 6.2.4) */
         CHECK_EQ(dev.atr.y_class, 0x02);
         CHECK_EQ(iso7816_deactivate(&dev), ISO7816_OK);
         pc_card_destroy(card);
@@ -74,7 +74,7 @@ int main(void)
         pc_card_destroy(card);
     }
 
-    /* --- clock stop supporté (X=3) --- */
+    /* --- clock stop supported (X=3) --- */
     {
         pc_card_t *card = pc_card_create();
         pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_CLKSTOP, sizeof(ATR_CLKSTOP));
@@ -93,7 +93,7 @@ int main(void)
         pc_card_destroy(card);
     }
 
-    /* --- clock stop non supporté (X=0) --- */
+    /* --- clock stop not supported (X=0) --- */
     {
         pc_card_t *card = pc_card_create();
         pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_NOCLKSTOP, sizeof(ATR_NOCLKSTOP));

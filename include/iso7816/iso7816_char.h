@@ -1,15 +1,17 @@
-/*
- * iso7816_char.h — couche caractère asynchrone (cl. 7).
+/**
+ * @file iso7816_char.h
+ * @brief Asynchronous character layer (cl. 7).
  *
- * Trame de 10 moments : start (L) + 8 bits + parité (paire).
- * etu = F/D cycles d'horloge. Signal d'erreur à (10,5±0,2) etu (cl. 7.3).
+ * 10-moment frame: start (L) + 8 bits + even parity. etu = F/D clock cycles.
+ * The full frame, parity check, error signal (NACK) and guard time are
+ * handled by the port (smartcard peripheral); this layer keeps the
+ * retransmission policy and waiting times.
  */
 #pragma once
 
-#include "iso7816_const.h"
-
 #include <stdint.h>
 
+#include "iso7816_const.h"
 #include "iso7816_status.h"
 
 #ifdef __cplusplus
@@ -18,19 +20,27 @@ extern "C" {
 
 struct iso7816;
 
-/* Durée d'un etu en µs pour les paramètres courants F/D/f. */
+/** @brief Duration of one etu in µs for the current F/D/f parameters. */
 uint32_t iso7816_etu_us(const struct iso7816 *dev);
 
-/* Guard time en µs (cl. 8.3, TC1) : 12 etu + R*N/f. */
+/** @brief Guard time in µs (cl. 8.3, TC1): 12 etu + R*N/f. */
 uint32_t iso7816_gt_us(const struct iso7816 *dev);
 
-/* Émet un caractère ; gère le signal d'erreur et la répétition (cl. 7.3). */
+/**
+ * @brief Transmit one character; manages the error signal and retransmission (cl. 7.3).
+ * @param dev  Library context.
+ * @param byte Byte to send.
+ * @return ISO7816_OK or ISO7816_CHAR_PARITY after max_retries.
+ */
 iso7816_status_t iso7816_char_tx(struct iso7816 *dev, uint8_t byte);
 
-/*
- * Reçoit un caractère. timeout_us : waiting time (WT) en µs.
- * En cas de parité incorrecte : si dev->use_error_signal, émet le signal
- * d'erreur (cl. 7.3) ; renvoie ISO7816_CHAR_PARITY (l'appelant retente).
+/**
+ * @brief Receive one character.
+ * @param dev        Library context.
+ * @param byte       Receives the byte.
+ * @param timeout_us Waiting time (WT) in µs.
+ * @return ISO7816_OK, ISO7816_CHAR_WT (timeout) or ISO7816_CHAR_PARITY
+ *         (wrong parity; the port sent the error signal, cl. 7.3 — caller retries).
  */
 iso7816_status_t iso7816_char_rx(struct iso7816 *dev, uint8_t *byte, uint32_t timeout_us);
 

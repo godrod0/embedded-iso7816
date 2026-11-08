@@ -20,10 +20,10 @@ flowchart TB
     T0 & T1 --> PPS[iso7816_pps]
     PPS --> ATR[iso7816_atr]
     ATR --> CHAR[iso7816_char]
-    CHAR --> DEV[iso7816 — cl. 6]
-    DEV --> HAL[iso7816_hal_t — unique API matérielle]
-    HAL --> STM[port/stm32u5 — USART mode smartcard (HAL SMARTCARD STM32U5) + load-switches VCC]
-    HAL --> PC[port PC mock + carte simulée — tests]
+    CHAR --> DEV["iso7816 — cl. 6"]
+    DEV --> HAL["iso7816_hal_t — unique API matérielle"]
+    HAL --> STM["port/stm32u5 — USART mode smartcard (HAL SMARTCARD STM32U5) + load-switches VCC"]
+    HAL --> PC["port PC mock + carte simulée — tests"]
 ```
 
 ## Conventions de code
@@ -33,3 +33,14 @@ flowchart TB
   organisée par clause) — aucun littéral magique dans les sources.
 - Les variables de statut (`iso7816_status_t`) contiennent `stat` dans leur nom
   (ex. `stat`, `stat_resp`, `last_stat`) ; le pointeur de contexte est `dev`.
+
+## Documentation API (Doxygen)
+
+La documentation des fonctions exposées est en anglais (commentaires Doxygen
+`@brief`/`@param`/`@return` dans `include/iso7816/` et `port/stm32u5/`).
+
+Générer la doc HTML :
+
+```sh
+doxygen Doxyfile        # sortie dans docs/html/index.html
+```
