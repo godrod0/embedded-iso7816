@@ -90,7 +90,7 @@ static void do_deactivate(iso7816_t *dev)
 {
     dev->hal->rst_drive(dev->hal->ctx, false);
     dev->hal->clk_stop(dev->hal->ctx, false);     /* CLK à L (cl. 6.4) */
-    dev->hal->io_tx(dev->hal->ctx, false);        /* I/O à L */
+    dev->hal->io_drive(dev->hal->ctx, false);    /* I/O à L */
     dev->hal->vcc_off(dev->hal->ctx);
     dev->active = false;
     dev->clock_stopped = false;
@@ -101,7 +101,7 @@ static iso7816_status_t try_activate(iso7816_t *dev, iso7816_class_t cls)
 {
     dev->hal->vcc_on(dev->hal->ctx, cls);
     dev->hal->rst_drive(dev->hal->ctx, false);    /* RST à L */
-    dev->hal->io_rx(dev->hal->ctx);               /* I/O en réception côté IFD */
+    /* I/O : le périphérique smartcard relâche la ligne quand il n'émet pas */
 
     uint32_t clk_hz = dev->hal->clk_start(dev->hal->ctx, dev->clk_reset_hz);
     if (clk_hz < ISO7816_CLK_RESET_MIN_HZ) clk_hz = ISO7816_CLK_RESET_MIN_HZ;

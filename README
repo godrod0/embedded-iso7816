@@ -22,7 +22,7 @@ flowchart TB
     ATR --> CHAR[iso7816_char]
     CHAR --> DEV[iso7816 — cl. 6]
     DEV --> HAL[iso7816_hal_t — unique API matérielle]
-    HAL --> STM[port/stm32u5 — GPIO + TIM PWM + load-switches VCC]
+    HAL --> STM[port/stm32u5 — USART mode smartcard (HAL SMARTCARD STM32U5) + load-switches VCC]
     HAL --> PC[port PC mock + carte simulée — tests]
 ```
 
