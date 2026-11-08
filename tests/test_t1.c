@@ -5,10 +5,10 @@
 #include "pc_card.h"
 #include "test_main.h"
 
-/* ATR T=1 seul : T0=0x80, TD1=0x01, TCK=0x81 */
+/* ATR T=1 only: T0=0x80, TD1=0x01, TCK=0x81 */
 static const uint8_t ATR_T1[] = { 0x80, 0x01, 0x81 };
 
-/* ATR T=1 avec IFSC=8 : T0=0x80, TD1=0x11, TA(T=1)=0x08, TCK=0x99 */
+/* ATR T=1 with IFSC=8: T0=0x80, TD1=0x11, TA(T=1)=0x08, TCK=0x99 */
 static const uint8_t ATR_T1_IFSC8[] = { 0x80, 0x11, 0x08, 0x99 };
 
 static void h_read(pc_card_t *c, const uint8_t *apdu, size_t len)
@@ -39,7 +39,7 @@ static void h_update(pc_card_t *c, const uint8_t *apdu, size_t len)
 
 int main(void)
 {
-    /* --- échange simple T=1 (LRC) --- */
+    /* --- simple T=1 exchange (LRC) --- */
     {
         pc_card_t *card = pc_card_create();
         pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_T1, sizeof(ATR_T1));
@@ -52,7 +52,7 @@ int main(void)
         pc_card_attach(card, &dev);
         CHECK_EQ(iso7816_activate(&dev, ISO7816_CLASS_A), ISO7816_OK);
         CHECK_EQ(iso7816_get_protocol(&dev), 1);
-        CHECK(!dev.use_error_signal);   /* pas de signal d'erreur en T=1 (cl. 11.2) */
+        CHECK(!dev.use_error_signal);   /* no error signal in T=1 (cl. 11.2) */
 
         uint8_t resp[64];
         size_t rlen = 0;
@@ -68,7 +68,7 @@ int main(void)
         pc_card_destroy(card);
     }
 
-    /* --- réponse chaînée (IFSC=8, 20 octets -> 3 I-blocs) + commande chaînée --- */
+    /* --- chained response (IFSC=8, 20 bytes -> 3 I-blocks) + chained command --- */
     {
         pc_card_t *card = pc_card_create();
         pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_T1_IFSC8, sizeof(ATR_T1_IFSC8));
@@ -87,21 +87,21 @@ int main(void)
         size_t rlen = 0;
         uint16_t sw = 0;
 
-        /* cas 2S, Ne=20 : la réponse arrive en blocs chaînés (M-bit) */
+        /* case 2S, Ne=20: the response arrives in chained blocks (M-bit) */
         uint8_t cmd[] = { 0x00, 0xB0, 0x00, 0x00, 0x14 };
         CHECK_EQ(iso7816_exchange(&dev, cmd, sizeof(cmd), resp, sizeof(resp), &rlen, &sw), ISO7816_OK);
         CHECK_EQ(sw, ISO7816_SW_OK);
         CHECK_EQ(rlen, 20);
         for (int i = 0; i < 20; i++) CHECK_EQ(resp[i], i);
 
-        /* cas 3S avec Nc=20 > IFSC=8 : la commande part en blocs chaînés */
+        /* case 3S with Nc=20 > IFSC=8: the command goes in chained blocks */
         uint8_t cmd3[25];
         cmd3[0] = 0x00; cmd3[1] = 0xD0; cmd3[2] = 0x00; cmd3[3] = 0x00; cmd3[4] = 20;
         for (int i = 0; i < 20; i++) cmd3[5 + i] = (uint8_t)(0x40 + i);
         CHECK_EQ(iso7816_exchange(&dev, cmd3, sizeof(cmd3), resp, sizeof(resp), &rlen, &sw), ISO7816_OK);
         CHECK_EQ(sw, ISO7816_SW_OK);
 
-        /* la carte a reçu l'APDU complète (header 5 + 20 data) malgré le chaînage */
+        /* the card received the complete APDU (header 5 + 20 data) despite chaining */
         CHECK_EQ(g_apdu_len, 25);
         CHECK_EQ(g_apdu[0], 0x00);
         CHECK_EQ(g_apdu[1], 0xD0);

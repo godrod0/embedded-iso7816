@@ -80,7 +80,7 @@ int main(void)
         CHECK_EQ(decoded.ne, 16);
     }
 
-    /* invalide : longueur incohérente */
+    /* invalid: inconsistent length */
     {
         uint8_t in[] = { 0x00, 0xB0, 0x00, 0x00, 0x05, 0xAA };
         CHECK_EQ(iso7816_apdu_decode(in, sizeof(in), &decoded), ISO7816_APDU_INVALID);

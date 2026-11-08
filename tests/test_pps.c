@@ -5,12 +5,12 @@
 #include "pc_card.h"
 #include "test_main.h"
 
-/* T0=0x10 (TA1 présent), TA1=0x16 -> Fi code 1 (372, 5 MHz), Di code 6 (Di=32) */
+/* T0=0x10 (TA1 present), TA1=0x16 -> Fi code 1 (372, 5 MHz), Di code 6 (Di=32) */
 static const uint8_t ATR_TA1[] = { 0x10, 0x16 };
 
 int main(void)
 {
-    /* --- PPS accepté : D passe de 1 à 8 --- */
+    /* --- PPS accepted: D goes from 1 to 8 --- */
     {
         pc_card_t *card = pc_card_create();
         pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_TA1, sizeof(ATR_TA1));
@@ -30,20 +30,20 @@ int main(void)
         CHECK_EQ(iso7816_get_protocol(&dev), 0);
         CHECK_EQ(iso7816_etu_us(&dev), ISO7816_F_DEFAULT / 8);   /* 46 µs */
 
-        /* la carte a reçu la requête PPS : FF 10 14 FB */
+        /* the card received the PPS request: FF 10 14 FB */
         uint8_t rx_log[16];
         size_t rx_len = pc_card_rxlog(card, rx_log, sizeof(rx_log));
         CHECK(rx_len >= 4);
         CHECK_EQ(rx_log[rx_len - 4], ISO7816_PPS_PPSS);
-        CHECK_EQ(rx_log[rx_len - 3], ISO7816_PPS0_PPS1_BIT);   /* PPS0 : bit5=1 (PPS1 présent), T=0 */
-        CHECK_EQ(rx_log[rx_len - 2], 0x14);   /* PPS1 : Fi code 1, Di code 4 (D=8) */
+        CHECK_EQ(rx_log[rx_len - 3], ISO7816_PPS0_PPS1_BIT);   /* PPS0: bit5=1 (PPS1 present), T=0 */
+        CHECK_EQ(rx_log[rx_len - 2], 0x14);   /* PPS1: Fi code 1, Di code 4 (D=8) */
         CHECK_EQ(rx_log[rx_len - 1], ISO7816_PPS_PPSS ^ ISO7816_PPS0_PPS1_BIT ^ 0x14);
 
         CHECK_EQ(iso7816_deactivate(&dev), ISO7816_OK);
         pc_card_destroy(card);
     }
 
-    /* --- PPS refusé par la carte (pas de réponse) -> PPS_FAILED --- */
+    /* --- PPS refused by the card (no answer) -> PPS_FAILED --- */
     {
         pc_card_t *card = pc_card_create();
         pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_TA1, sizeof(ATR_TA1));
@@ -62,7 +62,7 @@ int main(void)
         pc_card_destroy(card);
     }
 
-    /* --- protocole non offert -> PPS_PROTOCOL --- */
+    /* --- protocol not offered -> PPS_PROTOCOL --- */
     {
         pc_card_t *card = pc_card_create();
         pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_TA1, sizeof(ATR_TA1));   /* offre T=0 seulement */

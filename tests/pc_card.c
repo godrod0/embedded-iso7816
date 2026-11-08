@@ -1,11 +1,12 @@
 /*
- * pc_card.c — port PC : HAL mock + carte simulée (ATR, PPS, T=0, T=1).
+ * @file pc_card.c
+ * @brief PC port: HAL mock + simulated card (ATR, PPS, T=0, T=1).
  *
- * Le mock émule un périphérique smartcard au niveau octet (comme le port
- * STM32U5 avec HAL_SMARTCARD) : tx_byte/rx_byte transfèrent une trame
- * complète (10 etu : start + 8 bits + parité) sur une ligne virtuelle à
- * temps simulé. Une parité fausse côté carte fait émettre le NACK par le
- * "périphérique" de l'IFD (compté dans ifd_err_count, cl. 7.3).
+ * The mock emulates a smartcard peripheral at byte level (like the STM32U5
+ * port with HAL_SMARTCARD): tx_byte/rx_byte transfer a full frame (10 etu:
+ * start + 8 bits + parity) over a virtual line with simulated time. A wrong
+ * parity card-side makes the IFD "peripheral" send the NACK (counted in
+ * ifd_err_count, cl. 7.3).
  */
 #include "pc_card.h"
 
@@ -20,7 +21,7 @@
 #define CMD_SLOTS           8    /* handlers de commandes enregistrables */
 #define APDU_BUF_MAX        700
 #define T0_DATA_MAX         256
-#define PC_CARD_DEFAULT_CLK_HZ 1000000U /* horloge virtuelle du mock si aucune base de temps */
+#define PC_CARD_DEFAULT_CLK_HZ 1000000U /* mock virtual clock if no time base */
 
 typedef struct {
     uint8_t ins;
@@ -41,24 +42,24 @@ struct pc_card {
     bool vcc_on;
     iso7816_class_t cls;
     bool rst_high;
-    bool ifd_drive;             /* l'IFD force la ligne (io_drive) */
+    bool ifd_drive;             /* the IFD drives the line (io_drive) */
     bool ifd_level;
 
-    /* émission carte (file txq) */
+    /* card transmission (txq queue) */
     uint8_t  txq[TXQ_MAX];
     size_t   qhead, qcount;
-    uint32_t next_allowed;      /* instant de départ du prochain caractère carte */
-    bool     cur_active;        /* la carte est en train d'émettre un caractère */
+    uint32_t next_allowed;      /* start instant of the next card character */
+    bool     cur_active;        /* the card is transmitting a character */
     uint32_t cur_start;
     uint8_t  cur_byte;
-    bool     cur_bad;           /* parité fausse sur ce caractère */
+    bool     cur_bad;           /* wrong parity on this character */
 
-    /* réception IFD */
-    uint8_t  rxlog[RXLOG_MAX];  /* octets reçus par la carte */
+    /* IFD reception */
+    uint8_t  rxlog[RXLOG_MAX];  /* bytes received by the card */
     size_t   rxlog_len;
-    uint32_t ifd_err_count;     /* NACK émis par le "périphérique" de l'IFD */
+    uint32_t ifd_err_count;     /* NACK sent by the IFD "peripheral" */
 
-    /* config carte simulée */
+    /* simulated card config */
     uint8_t  ts;
     uint8_t  atr[ISO7816_ATR_MAX_BYTES];
     size_t   atr_len;
@@ -68,8 +69,8 @@ struct pc_card {
     cmd_entry_t cmds[CMD_SLOTS];
     bool     corrupt_next;
 
-    /* état protocole carte */
-    int      phase;                 /* 1 = session active (reset reçu) */
+    /* card protocol state */
+    int      phase;                 /* 1 = session active (reset received) */
     bool     in_pps;
     uint8_t  pps_buf[ISO7816_PPS_RESP_MAX];
     size_t   pps_len, pps_expected;
@@ -87,13 +88,13 @@ struct pc_card {
     uint8_t  t1_inf[ISO7816_T1_INF_MAX];
     uint8_t  t1_inf_len;
     uint8_t  t1_ns;
-    /* blocs chaînés en attente (la carte attend l'ack R entre deux I-blocs M=1) */
+    /* pending chained blocks (the card waits for the R ack between two M=1 I-blocks) */
     uint8_t  pend_blk[CMD_SLOTS][ISO7816_T1_HEADER_LEN + ISO7816_T1_INF_MAX + 1];
     uint8_t  pend_len[CMD_SLOTS];
     int      pend_count, pend_head;
 };
 
-/* ---------- helpers temps/etu ---------- */
+/* ---------- time/etu helpers ---------- */
 
 static uint32_t card_etu_us(pc_card_t *card)
 {
@@ -113,9 +114,9 @@ static uint32_t card_cycles_us(pc_card_t *card, uint32_t cycles)
     return (uint32_t)((uint64_t)cycles * ISO7816_US_PER_SECOND / clk_hz);
 }
 
-/* ---------- modèle de ligne ---------- */
+/* ---------- line model ---------- */
 
-/* Démarre l'émission du prochain caractère carte si l'instant est venu. */
+/* Starts transmission of the next card character if the time has come. */
 static void card_pump(pc_card_t *card, uint32_t time_us)
 {
     if (!card->cur_active && card->qcount > 0 && time_us >= card->next_allowed) {
@@ -127,7 +128,7 @@ static void card_pump(pc_card_t *card, uint32_t time_us)
     }
 }
 
-/* Niveau de la ligne à l'instant t (côté carte en émission, sinon pull-up H). */
+/* Line level at instant t (card transmitting, otherwise pull-up H). */
 static bool card_line(pc_card_t *card, uint32_t time_us)
 {
     uint32_t etu = card_etu_us(card);
@@ -150,7 +151,7 @@ static bool card_line(pc_card_t *card, uint32_t time_us)
     return level;
 }
 
-/* ---------- protocole carte ---------- */
+/* ---------- card protocol ---------- */
 
 static void card_queue(pc_card_t *card, const uint8_t *data, size_t len)
 {
@@ -193,7 +194,7 @@ static void card_t1_handle_block(pc_card_t *card)
             card->apdu_len += card->t1_inf_len;
         }
         if (more) {
-            /* acquittement R(N(R) = N(S)^1) — règle 2.2 (N(S) reçu, pas le nôtre) */
+            /* ack R(N(R) = N(S)^1) — rule 2.2 (received N(S), not ours) */
             card_t1_queue_block(card,
                                 (uint8_t)(ISO7816_T1_PCB_RBLOCK |
                                           ((ns ^ 1U) != 0 ? ISO7816_T1_PCB_NR_BIT : 0)),
@@ -208,7 +209,7 @@ static void card_t1_handle_block(pc_card_t *card)
             if (entry) {
                 entry->fn(card, card->apdu, card->apdu_len);
             } else {
-                pc_card_t1_queue_response(card, NULL, 0, 0x6D00);   /* INS non supporté */
+                pc_card_t1_queue_response(card, NULL, 0, 0x6D00);   /* INS not supported */
             }
             card->apdu_len = 0;
         }
@@ -221,7 +222,7 @@ static void card_t1_handle_block(pc_card_t *card)
                                 card->t1_inf, card->t1_inf_len);
         }
         if (s_func == ISO7816_T1_S_RESYNCH && (pcb & ISO7816_T1_PCB_RESP_BIT) == 0) {
-            /* S(RESYNCH request) -> response, état initial */
+            /* S(RESYNCH request) -> response, initial state */
             card_t1_queue_block(card,
                                 (uint8_t)(ISO7816_T1_PCB_SBLOCK | ISO7816_T1_PCB_RESP_BIT | ISO7816_T1_S_RESYNCH),
                                 NULL, 0);
@@ -229,7 +230,7 @@ static void card_t1_handle_block(pc_card_t *card)
             card->apdu_len = 0;
         }
     } else if ((pcb & ISO7816_T1_PCB_TYPE_MASK) == ISO7816_T1_PCB_RBLOCK) {
-        /* R-block (ack de l'IFD) : on peut envoyer le bloc chaîné suivant */
+        /* R-block (IFD ack): the next chained block can be sent */
         card_t1_pump_pending(card);
     }
 }
@@ -253,7 +254,7 @@ static void card_t1_byte(pc_card_t *card, uint8_t byte)
         for (int i = 0; i < (int)card->t1_inf_len; i++) xor_acc ^= card->t1_inf[i];
         card->t1_state = 0;
         if ((uint8_t)(xor_acc ^ byte) != 0) {
-            /* LRC faux : R-block avec code erreur EDC */
+            /* wrong LRC: R-block with EDC error code */
             card_t1_queue_block(card,
                                 (uint8_t)(ISO7816_T1_PCB_RBLOCK |
                                           ((card->t1_ns & 1U) != 0 ? ISO7816_T1_PCB_NR_BIT : 0) |
@@ -311,7 +312,7 @@ static void card_t0_byte(pc_card_t *card, uint8_t byte)
             card->t0_await_data = true;
             card->t0_data_need = p3;
             card->t0_data_len = 0;
-            uint8_t ack = ins;                      /* ACK = INS : toutes les données */
+            uint8_t ack = ins;                      /* ACK = INS: all data */
             card_queue(card, &ack, 1);
         } else {
             memcpy(card->apdu, card->t0_hdr, ISO7816_T0_HEADER_LEN);
@@ -339,7 +340,7 @@ static void card_on_byte(pc_card_t *card, uint8_t byte)
     else card_t0_byte(card, byte);
 }
 
-/* ---------- callbacks HAL (émulation périphérique smartcard, niveau octet) ---------- */
+/* ---------- HAL callbacks (smartcard peripheral emulation, byte level) ---------- */
 
 static int m_init(void *ctx) { (void)ctx; return 0; }
 static void m_deinit(void *ctx) { (void)ctx; }
@@ -362,7 +363,7 @@ static void m_rst(void *ctx, bool high)
 {
     pc_card_t *card = ctx;
     if (high && !card->rst_high && card->vcc_on) {
-        /* cold/warm reset : la carte va répondre à l'ATR */
+        /* cold/warm reset: the card will answer the ATR */
         card->phase = 1;
         card->rxlog_len = 0;
         card->qcount = 0;
@@ -379,7 +380,7 @@ static void m_rst(void *ctx, bool high)
             memcpy(hdr + 1, card->atr, card->atr_len);
             card_queue(card, hdr, 1 + card->atr_len);
         }
-        /* réponse entre 400 et 40 000 cycles (cl. 6.2.2) */
+        /* answer between 400 and 40 000 cycles (cl. 6.2.2) */
         card->next_allowed = card->now_us + card_cycles_us(card, ISO7816_COLD_RESET_RST_LOW_CYCLES);
     }
     card->rst_high = high;
@@ -394,20 +395,20 @@ static uint32_t m_clk_start(void *ctx, uint32_t hz)
 
 static void m_clk_stop(void *ctx, bool keep_high) { (void)ctx; (void)keep_high; }
 
-/* Émission d'une trame complète par l'IFD (10 etu + GT). */
+/* Full frame transmission by the IFD (10 etu + GT). */
 static iso7816_status_t m_tx_byte(void *ctx, uint8_t byte)
 {
     pc_card_t *card = ctx;
     uint32_t etu = card_etu_us(card);
     card_on_byte(card, byte);
-    /* la trame occupe la ligne : 10 etu + guard time */
+    /* the frame occupies the line: 10 etu + guard time */
     card->now_us += (ISO7816_CHAR_MOMENT_TOTAL + ISO7816_CHAR_GT_ETU) * etu;
     card_pump(card, card->now_us);
     return ISO7816_OK;
 }
 
-/* Réception d'une trame complète. WT si la carte est muette ;
-   parité fausse -> le "périphérique" de l'IFD émet le NACK (compté). */
+/* Full frame reception. WT if the card is silent;
+   wrong parity -> the IFD "peripheral" sends the NACK (counted). */
 static iso7816_status_t m_rx_byte(void *ctx, uint8_t *byte, uint32_t timeout_us)
 {
     pc_card_t *card = ctx;
@@ -416,7 +417,7 @@ static iso7816_status_t m_rx_byte(void *ctx, uint8_t *byte, uint32_t timeout_us)
     for (;;) {
         card_pump(card, card->now_us);
         if (card->cur_active && card->now_us >= card->cur_start + ISO7816_CHAR_MOMENT_TOTAL * etu) {
-            /* trame reçue en totalité */
+            /* frame fully received */
             uint8_t received = card->cur_byte;
             bool bad = card->cur_bad;
             card->qhead = (card->qhead + 1) % TXQ_MAX;
@@ -425,7 +426,7 @@ static iso7816_status_t m_rx_byte(void *ctx, uint8_t *byte, uint32_t timeout_us)
             card->cur_active = false;
             card->now_us = card->cur_start + ISO7816_CHAR_MOMENT_TOTAL * etu;
             if (bad) {
-                card->ifd_err_count++;  /* NACK émis automatiquement (cl. 7.3) */
+                card->ifd_err_count++;  /* NACK sent automatically (cl. 7.3) */
                 return ISO7816_CHAR_PARITY;
             }
             *byte = received;
@@ -456,7 +457,7 @@ static uint32_t m_micros(void *ctx)
     pc_card_t *card = ctx;
     uint32_t now_us = card->now_us;
     card_pump(card, now_us);
-    card->now_us = now_us + 1;  /* chaque scrutation fait avancer le temps virtuel de 1 µs */
+    card->now_us = now_us + 1;  /* each poll advances virtual time by 1 µs */
     return now_us;
 }
 
@@ -469,7 +470,7 @@ static void m_delay_us(void *ctx, uint32_t us)
     }
 }
 
-/* ---------- API publique du mock ---------- */
+/* ---------- public mock API ---------- */
 
 pc_card_t *pc_card_create(void)
 {
@@ -576,7 +577,7 @@ void pc_card_t1_queue_response(pc_card_t *card, const uint8_t *data, size_t len,
         card->t1_ns ^= 1;
         off += chunk;
     } while (off < total);
-    card_t1_pump_pending(card);   /* le premier bloc part immédiatement (il ack la commande) */
+    card_t1_pump_pending(card);   /* the first block is sent immediately (it acks the command) */
 }
 
 size_t pc_card_rxlog(const pc_card_t *card, uint8_t *out, size_t cap)
