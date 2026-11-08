@@ -1,0 +1,9 @@
+# Build CMake
+/build/
+
+# Documentation Doxygen générée (doxygen Doxyfile)
+/docs/
+
+# Artefacts
+*.o
+*.a

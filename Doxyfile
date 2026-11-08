@@ -1,0 +1,44 @@
+# Doxyfile — génère la documentation de l'API (HTML) de la bibliothèque iso7816.
+#
+# Usage :
+#   doxygen Doxyfile          -> sortie dans docs/html/ (index.html)
+#   xdg-open docs/html/index.html
+#
+# La documentation des fonctions publiques est en anglais (commentaires
+# Doxygen @brief/@param/@return dans include/iso7816/*.h et port/stm32u5/).
+
+# ---- Projet ----
+PROJECT_NAME           = "iso7816"
+PROJECT_BRIEF          = "C23 library for ISO/IEC 7816-3:2006, IFD (reader) side"
+PROJECT_NUMBER         = "1.0"
+OUTPUT_DIRECTORY       = docs
+
+# ---- Entrées ----
+# API publique + implémentation + port STM32U5 + mock de test.
+INPUT                  = include src port tests
+FILE_PATTERNS          = *.h *.c
+RECURSIVE              = YES
+EXCLUDE                = build docs
+EXCLUDE_PATTERNS       = */build/* */docs/*
+
+# ---- Sorties ----
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_LATEX         = NO
+GENERATE_MAN           = NO
+GENERATE_RTF           = NO
+GENERATE_XML           = NO
+
+# ---- Extraction ----
+EXTRACT_ALL            = NO      # only documented entities (public API is fully documented)
+EXTRACT_STATIC         = YES
+EXTRACT_PRIVATE        = NO
+CASE_SENSE_NAMES       = YES
+SORT_BRIEF_DOCS        = YES
+SORT_BY_SCOPE_NAME     = YES
+
+# ---- Avertissements ----
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = YES
+QUIET                  = NO
