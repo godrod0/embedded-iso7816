@@ -17,6 +17,7 @@
 #define APDU_BUF_MAX        700
 #define T0_DATA_MAX         256
 #define MOCK_ERR_SIGNAL_ETU 2U   /* durée du signal d'erreur émis par la carte (1..2 etu, cl. 7.3) */
+#define PC_CARD_DEFAULT_CLK_HZ 1000000U /* horloge virtuelle du mock si aucune base de temps */
 
 typedef struct {
     uint8_t ins;
@@ -97,7 +98,7 @@ struct pc_card {
 static uint32_t card_etu_us(pc_card_t *card)
 {
     if (card->dev) return iso7816_etu_us(card->dev);
-    uint32_t clk_hz = card->clk_hz ? card->clk_hz : ISO7816_PORT_TIME_BASE_HZ;
+    uint32_t clk_hz = card->clk_hz ? card->clk_hz : PC_CARD_DEFAULT_CLK_HZ;
     return (uint32_t)((uint64_t)ISO7816_F_DEFAULT * ISO7816_US_PER_SECOND / clk_hz);
 }
 
@@ -108,7 +109,7 @@ static bool card_inverse(pc_card_t *card)
 
 static uint32_t card_cycles_us(pc_card_t *card, uint32_t cycles)
 {
-    uint32_t clk_hz = card->dev ? card->dev->f_hz : (card->clk_hz ? card->clk_hz : ISO7816_PORT_TIME_BASE_HZ);
+    uint32_t clk_hz = card->dev ? card->dev->f_hz : (card->clk_hz ? card->clk_hz : PC_CARD_DEFAULT_CLK_HZ);
     return (uint32_t)((uint64_t)cycles * ISO7816_US_PER_SECOND / clk_hz);
 }
 

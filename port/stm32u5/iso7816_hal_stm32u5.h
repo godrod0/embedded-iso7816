@@ -19,6 +19,8 @@
 #include "iso7816/iso7816_const.h"
 #include "iso7816/iso7816_hal.h"
 
+#include "iso7816_hal_stm32u5_const.h"   /* constantes propres au port STM32U5 */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
