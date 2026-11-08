@@ -15,7 +15,7 @@ static void h_read(pc_card_t *c, const uint8_t *apdu, size_t len)
 {
     (void)apdu; (void)len;
     static const uint8_t data[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
-    pc_card_t1_queue_response(c, data, sizeof(data), 0x9000);
+    pc_card_t1_queue_response(c, data, sizeof(data), ISO7816_SW_OK);
 }
 
 static void h_read_big(pc_card_t *c, const uint8_t *apdu, size_t len)
@@ -23,7 +23,7 @@ static void h_read_big(pc_card_t *c, const uint8_t *apdu, size_t len)
     (void)apdu; (void)len;
     static uint8_t data[20];
     for (int i = 0; i < 20; i++) data[i] = (uint8_t)i;
-    pc_card_t1_queue_response(c, data, sizeof(data), 0x9000);
+    pc_card_t1_queue_response(c, data, sizeof(data), ISO7816_SW_OK);
 }
 
 static uint8_t g_apdu[64];
@@ -34,7 +34,7 @@ static void h_update(pc_card_t *c, const uint8_t *apdu, size_t len)
         memcpy(g_apdu, apdu, len);
         g_apdu_len = len;
     }
-    pc_card_t1_queue_response(c, NULL, 0, 0x9000);
+    pc_card_t1_queue_response(c, NULL, 0, ISO7816_SW_OK);
 }
 
 int main(void)
@@ -42,12 +42,12 @@ int main(void)
     /* --- échange simple T=1 (LRC) --- */
     {
         pc_card_t *card = pc_card_create();
-        pc_card_set_atr(card, 0x3B, ATR_T1, sizeof(ATR_T1));
+        pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_T1, sizeof(ATR_T1));
         pc_card_set_protocol(card, 1);
         pc_card_set_cmd_handler(card, 0xB0, false, h_read);
 
         iso7816_t dev;
-        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = 1000000 };
+        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = ISO7816_CLK_RESET_MIN_HZ };
         CHECK_EQ(iso7816_init(&dev, pc_card_hal(card), &cfg), ISO7816_OK);
         pc_card_attach(card, &dev);
         CHECK_EQ(iso7816_activate(&dev, ISO7816_CLASS_A), ISO7816_OK);
@@ -59,7 +59,7 @@ int main(void)
         uint16_t sw = 0;
         uint8_t cmd[] = { 0x00, 0xB0, 0x00, 0x00, 0x04 };
         CHECK_EQ(iso7816_exchange(&dev, cmd, sizeof(cmd), resp, sizeof(resp), &rlen, &sw), ISO7816_OK);
-        CHECK_EQ(sw, 0x9000);
+        CHECK_EQ(sw, ISO7816_SW_OK);
         CHECK_EQ(rlen, 4);
         CHECK_EQ(resp[0], 0xDE);
         CHECK_EQ(resp[3], 0xEF);
@@ -71,13 +71,13 @@ int main(void)
     /* --- réponse chaînée (IFSC=8, 20 octets -> 3 I-blocs) + commande chaînée --- */
     {
         pc_card_t *card = pc_card_create();
-        pc_card_set_atr(card, 0x3B, ATR_T1_IFSC8, sizeof(ATR_T1_IFSC8));
+        pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_T1_IFSC8, sizeof(ATR_T1_IFSC8));
         pc_card_set_protocol(card, 1);
         pc_card_set_cmd_handler(card, 0xB0, false, h_read_big);
         pc_card_set_cmd_handler(card, 0xD0, true, h_update);
 
         iso7816_t dev;
-        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = 1000000 };
+        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = ISO7816_CLK_RESET_MIN_HZ };
         CHECK_EQ(iso7816_init(&dev, pc_card_hal(card), &cfg), ISO7816_OK);
         pc_card_attach(card, &dev);
         CHECK_EQ(iso7816_activate(&dev, ISO7816_CLASS_A), ISO7816_OK);
@@ -90,7 +90,7 @@ int main(void)
         /* cas 2S, Ne=20 : la réponse arrive en blocs chaînés (M-bit) */
         uint8_t cmd[] = { 0x00, 0xB0, 0x00, 0x00, 0x14 };
         CHECK_EQ(iso7816_exchange(&dev, cmd, sizeof(cmd), resp, sizeof(resp), &rlen, &sw), ISO7816_OK);
-        CHECK_EQ(sw, 0x9000);
+        CHECK_EQ(sw, ISO7816_SW_OK);
         CHECK_EQ(rlen, 20);
         for (int i = 0; i < 20; i++) CHECK_EQ(resp[i], i);
 
@@ -99,7 +99,7 @@ int main(void)
         cmd3[0] = 0x00; cmd3[1] = 0xD0; cmd3[2] = 0x00; cmd3[3] = 0x00; cmd3[4] = 20;
         for (int i = 0; i < 20; i++) cmd3[5 + i] = (uint8_t)(0x40 + i);
         CHECK_EQ(iso7816_exchange(&dev, cmd3, sizeof(cmd3), resp, sizeof(resp), &rlen, &sw), ISO7816_OK);
-        CHECK_EQ(sw, 0x9000);
+        CHECK_EQ(sw, ISO7816_SW_OK);
 
         /* la carte a reçu l'APDU complète (header 5 + 20 data) malgré le chaînage */
         CHECK_EQ(g_apdu_len, 25);

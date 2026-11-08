@@ -3,6 +3,8 @@
  */
 #pragma once
 
+#include "iso7816_const.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -14,8 +16,6 @@ extern "C" {
 
 struct iso7816;
 
-#define ISO7816_T1_INF_MAX 254
-
 typedef struct {
     uint8_t  nad;
     uint8_t  pcb;                   /* type de bloc + N(S)/N(R)/fonction S */
@@ -25,7 +25,7 @@ typedef struct {
 } iso7816_t1_block_t;
 
 /* Échange d'une paire commande-réponse par T=1 (cl. 12.3). */
-iso7816_status_t iso7816_t1_exchange(struct iso7816 *d,
+iso7816_status_t iso7816_t1_exchange(struct iso7816 *dev,
                                      const uint8_t *cmd, size_t cmd_len,
                                      uint8_t *resp, size_t resp_cap,
                                      size_t *resp_len, uint16_t *sw);

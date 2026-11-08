@@ -13,12 +13,12 @@ int main(void)
     /* --- PPS accepté : D passe de 1 à 8 --- */
     {
         pc_card_t *card = pc_card_create();
-        pc_card_set_atr(card, 0x3B, ATR_TA1, sizeof(ATR_TA1));
+        pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_TA1, sizeof(ATR_TA1));
         pc_card_set_protocol(card, 0);
         pc_card_set_pps_accept(card, true);
 
         iso7816_t dev;
-        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = 1000000 };
+        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = ISO7816_CLK_RESET_MIN_HZ };
         CHECK_EQ(iso7816_init(&dev, pc_card_hal(card), &cfg), ISO7816_OK);
         pc_card_attach(card, &dev);
         CHECK_EQ(iso7816_activate(&dev, ISO7816_CLASS_A), ISO7816_OK);
@@ -28,16 +28,16 @@ int main(void)
         CHECK_EQ(dev.D, 8);
         CHECK_EQ(dev.F, 372);
         CHECK_EQ(iso7816_get_protocol(&dev), 0);
-        CHECK_EQ(iso7816_etu_us(&dev), 372 / 8);   /* 46 µs */
+        CHECK_EQ(iso7816_etu_us(&dev), ISO7816_F_DEFAULT / 8);   /* 46 µs */
 
         /* la carte a reçu la requête PPS : FF 10 14 FB */
-        uint8_t log[16];
-        size_t n = pc_card_rxlog(card, log, sizeof(log));
-        CHECK(n >= 4);
-        CHECK_EQ(log[n - 4], 0xFF);
-        CHECK_EQ(log[n - 3], 0x10);   /* PPS0 : bit5=1 (PPS1 présent), T=0 */
-        CHECK_EQ(log[n - 2], 0x14);   /* PPS1 : Fi code 1, Di code 4 (D=8) */
-        CHECK_EQ(log[n - 1], 0xFF ^ 0x10 ^ 0x14);
+        uint8_t rx_log[16];
+        size_t rx_len = pc_card_rxlog(card, rx_log, sizeof(rx_log));
+        CHECK(rx_len >= 4);
+        CHECK_EQ(rx_log[rx_len - 4], ISO7816_PPS_PPSS);
+        CHECK_EQ(rx_log[rx_len - 3], ISO7816_PPS0_PPS1_BIT);   /* PPS0 : bit5=1 (PPS1 présent), T=0 */
+        CHECK_EQ(rx_log[rx_len - 2], 0x14);   /* PPS1 : Fi code 1, Di code 4 (D=8) */
+        CHECK_EQ(rx_log[rx_len - 1], ISO7816_PPS_PPSS ^ ISO7816_PPS0_PPS1_BIT ^ 0x14);
 
         CHECK_EQ(iso7816_deactivate(&dev), ISO7816_OK);
         pc_card_destroy(card);
@@ -46,12 +46,12 @@ int main(void)
     /* --- PPS refusé par la carte (pas de réponse) -> PPS_FAILED --- */
     {
         pc_card_t *card = pc_card_create();
-        pc_card_set_atr(card, 0x3B, ATR_TA1, sizeof(ATR_TA1));
+        pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_TA1, sizeof(ATR_TA1));
         pc_card_set_protocol(card, 0);
         pc_card_set_pps_accept(card, false);
 
         iso7816_t dev;
-        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = 1000000 };
+        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = ISO7816_CLK_RESET_MIN_HZ };
         CHECK_EQ(iso7816_init(&dev, pc_card_hal(card), &cfg), ISO7816_OK);
         pc_card_attach(card, &dev);
         CHECK_EQ(iso7816_activate(&dev, ISO7816_CLASS_A), ISO7816_OK);
@@ -65,11 +65,11 @@ int main(void)
     /* --- protocole non offert -> PPS_PROTOCOL --- */
     {
         pc_card_t *card = pc_card_create();
-        pc_card_set_atr(card, 0x3B, ATR_TA1, sizeof(ATR_TA1));   /* offre T=0 seulement */
+        pc_card_set_atr(card, ISO7816_ATR_TS_DIRECT, ATR_TA1, sizeof(ATR_TA1));   /* offre T=0 seulement */
         pc_card_set_protocol(card, 0);
 
         iso7816_t dev;
-        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = 1000000 };
+        iso7816_config_t cfg = { .hal = pc_card_hal(card), .clk_hz = ISO7816_CLK_RESET_MIN_HZ };
         CHECK_EQ(iso7816_init(&dev, pc_card_hal(card), &cfg), ISO7816_OK);
         pc_card_attach(card, &dev);
         CHECK_EQ(iso7816_activate(&dev, ISO7816_CLASS_A), ISO7816_OK);

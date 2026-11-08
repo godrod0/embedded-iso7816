@@ -3,6 +3,8 @@
  */
 #pragma once
 
+#include "iso7816_const.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -15,7 +17,7 @@ extern "C" {
 struct iso7816;
 
 /* Échange d'une paire commande-réponse par T=0 (cl. 12.2). */
-iso7816_status_t iso7816_t0_exchange(struct iso7816 *d,
+iso7816_status_t iso7816_t0_exchange(struct iso7816 *dev,
                                      const uint8_t *cmd, size_t cmd_len,
                                      uint8_t *resp, size_t resp_cap,
                                      size_t *resp_len, uint16_t *sw);

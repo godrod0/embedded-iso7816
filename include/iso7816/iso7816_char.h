@@ -6,6 +6,8 @@
  */
 #pragma once
 
+#include "iso7816_const.h"
+
 #include <stdint.h>
 
 #include "iso7816_status.h"
@@ -17,20 +19,20 @@ extern "C" {
 struct iso7816;
 
 /* Durée d'un etu en µs pour les paramètres courants F/D/f. */
-uint32_t iso7816_etu_us(const struct iso7816 *d);
+uint32_t iso7816_etu_us(const struct iso7816 *dev);
 
 /* Guard time en µs (cl. 8.3, TC1) : 12 etu + R*N/f. */
-uint32_t iso7816_gt_us(const struct iso7816 *d);
+uint32_t iso7816_gt_us(const struct iso7816 *dev);
 
 /* Émet un caractère ; gère le signal d'erreur et la répétition (cl. 7.3). */
-iso7816_status_t iso7816_char_tx(struct iso7816 *d, uint8_t b);
+iso7816_status_t iso7816_char_tx(struct iso7816 *dev, uint8_t byte);
 
 /*
  * Reçoit un caractère. timeout_us : waiting time (WT) en µs.
- * En cas de parité incorrecte : si d->use_error_signal, émet le signal
+ * En cas de parité incorrecte : si dev->use_error_signal, émet le signal
  * d'erreur (cl. 7.3) ; renvoie ISO7816_CHAR_PARITY (l'appelant retente).
  */
-iso7816_status_t iso7816_char_rx(struct iso7816 *d, uint8_t *b, uint32_t timeout_us);
+iso7816_status_t iso7816_char_rx(struct iso7816 *dev, uint8_t *byte, uint32_t timeout_us);
 
 #ifdef __cplusplus
 }

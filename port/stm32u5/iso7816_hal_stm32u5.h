@@ -7,15 +7,16 @@
  *   C2 RST : GPIO push-pull
  *   C3 CLK : TIMx CHx en PWM 50 % (fréquence = f_TIM / ((PSC+1)(ARR+1)))
  *   C5 GND : masse
- *   C7 I/O : GPIO open-drain + pull-up externe 20 kΩ vers VCC (cl. 5.2.5) ;
+ *   C7 I/O : GPIO open-drain + pull-up externe 20 kΩ (ISO7816_PORT_IO_PULLUP_OHM) vers VCC (cl. 5.2.5) ;
  *            en réception : entrée flottante
  *
- * Base de temps µs : TIMy libre cadencé à 1 MHz (PSC = f_APB/1e6 - 1).
+ * Base de temps µs : TIMy libre cadencé à 1 MHz (ISO7816_PORT_TIME_BASE_HZ).
  */
 #pragma once
 
 #include "stm32u5xx_hal.h"
 
+#include "iso7816/iso7816_const.h"
 #include "iso7816/iso7816_hal.h"
 
 #ifdef __cplusplus

@@ -6,6 +6,8 @@
  */
 #pragma once
 
+#include "iso7816_const.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -62,17 +64,17 @@ typedef struct iso7816 {
     uint32_t atr_end_us;        /* fin de réception du dernier ATR */
 } iso7816_t;
 
-iso7816_status_t iso7816_init(iso7816_t *d, const iso7816_hal_t *hal,
+iso7816_status_t iso7816_init(iso7816_t *dev, const iso7816_hal_t *hal,
                               const iso7816_config_t *cfg);
 
 /* Activation + cold reset + ATR (cl. 6.2.1, 6.2.2, 8). Sélectionne la classe. */
-iso7816_status_t iso7816_activate(iso7816_t *d, iso7816_class_t cls);
+iso7816_status_t iso7816_activate(iso7816_t *dev, iso7816_class_t cls);
 
 /* Warm reset + nouvel ATR (cl. 6.2.3). */
-iso7816_status_t iso7816_warm_reset(iso7816_t *d);
+iso7816_status_t iso7816_warm_reset(iso7816_t *dev);
 
 /* PPS optionnel (cl. 9) — voir iso7816_pps_exchange(). */
-iso7816_status_t iso7816_pps(iso7816_t *d, uint8_t protocol, uint16_t F, uint8_t D);
+iso7816_status_t iso7816_pps(iso7816_t *dev, uint8_t protocol, uint16_t F, uint8_t D);
 
 /*
  * Échange d'une paire commande-réponse (cl. 12) via le protocole retenu :
@@ -81,20 +83,20 @@ iso7816_status_t iso7816_pps(iso7816_t *d, uint8_t protocol, uint16_t F, uint8_t
  * sw reçoit SW1-SW2 (ex. 0x9000). Un SW d'erreur n'est pas un code de
  * retour de transport : la fonction renvoie ISO7816_OK avec *sw != 0x9000.
  */
-iso7816_status_t iso7816_exchange(iso7816_t *d,
+iso7816_status_t iso7816_exchange(iso7816_t *dev,
                                   const uint8_t *cmd, size_t cmd_len,
                                   uint8_t *resp, size_t resp_cap,
                                   size_t *resp_len, uint16_t *sw);
 
 /* Arrêt / reprise d'horloge si supporté (cl. 6.3.2, indicateur X). */
-iso7816_status_t iso7816_clock_stop(iso7816_t *d);
-iso7816_status_t iso7816_clock_restart(iso7816_t *d);
+iso7816_status_t iso7816_clock_stop(iso7816_t *dev);
+iso7816_status_t iso7816_clock_restart(iso7816_t *dev);
 
 /* Désactivation (cl. 6.4) : RST=L, CLK=L, I/O=L, VCC off. */
-iso7816_status_t iso7816_deactivate(iso7816_t *d);
+iso7816_status_t iso7816_deactivate(iso7816_t *dev);
 
-const iso7816_atr_t *iso7816_get_atr(const iso7816_t *d);
-uint8_t iso7816_get_protocol(const iso7816_t *d);
+const iso7816_atr_t *iso7816_get_atr(const iso7816_t *dev);
+uint8_t iso7816_get_protocol(const iso7816_t *dev);
 
 #ifdef __cplusplus
 }

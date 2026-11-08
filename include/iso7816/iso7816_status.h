@@ -55,7 +55,7 @@ typedef enum {
     ISO7816_APDU_INVALID,           /* command APDU hors des 7 cas valides (tableau 13) */
 } iso7816_status_t;
 
-const char *iso7816_strstatus(iso7816_status_t s);
+const char *iso7816_strstatus(iso7816_status_t stat);
 
 #ifdef __cplusplus
 }

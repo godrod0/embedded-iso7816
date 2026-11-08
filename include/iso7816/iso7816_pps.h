@@ -3,6 +3,8 @@
  */
 #pragma once
 
+#include "iso7816_const.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -16,10 +18,10 @@ struct iso7816;
 
 /*
  * Échange PPS (cl. 9) : propose le protocole T et les paramètres F/D.
- * En cas de succès, met à jour d->F, d->D et d->protocol.
+ * En cas de succès, met à jour dev->F, dev->D et dev->protocol.
  * F/D doivent être dans [Fd..Fi] x [Dd..Di] (cl. 9.2).
  */
-iso7816_status_t iso7816_pps_exchange(struct iso7816 *d, uint8_t protocol,
+iso7816_status_t iso7816_pps_exchange(struct iso7816 *dev, uint8_t protocol,
                                       uint16_t F, uint8_t D);
 
 #ifdef __cplusplus

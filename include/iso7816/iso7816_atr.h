@@ -3,6 +3,8 @@
  */
 #pragma once
 
+#include "iso7816_const.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -13,13 +15,9 @@
 extern "C" {
 #endif
 
-#define ISO7816_ATR_MAX_BYTES   32   /* TS + T0 + ... + TCK : 32 caractères max (cl. 8.1) */
-#define ISO7816_ATR_HIST_MAX    15
-#define ISO7816_ATR_PROTO_MAX   8
-
 typedef struct {
     /* octet brut TS ('3B' direct / '3F' inverse) puis T0..TCK */
-    uint8_t  raw[1 + ISO7816_ATR_MAX_BYTES];
+    uint8_t  raw[1 + ISO7816_ATR_MAX_BYTES];   /* TS en [0], puis T0..TCK */
     size_t   raw_len;               /* nombre d'octets reçus (TS inclus) */
 
     bool     inverse;               /* convention de codage déduite de TS */

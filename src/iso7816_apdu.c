@@ -6,7 +6,7 @@
 iso7816_status_t iso7816_apdu_decode(const uint8_t *buf, size_t len,
                                      iso7816_apdu_cmd_t *out)
 {
-    if (!buf || !out || len < 4) return ISO7816_APDU_INVALID;
+    if (!buf || !out || len < ISO7816_APDU_HEADER_LEN) return ISO7816_APDU_INVALID;
 
     out->cla = buf[0];
     out->ins = buf[1];
@@ -16,135 +16,138 @@ iso7816_status_t iso7816_apdu_decode(const uint8_t *buf, size_t len,
     out->nc = 0;
     out->ne = 0;
 
-    if (len == 4) {
+    if (len == ISO7816_APDU_CASE1_LEN) {
         out->apdu_case = ISO7816_APDU_CASE_1;
         return ISO7816_OK;
     }
 
-    uint8_t c5 = buf[4];
-    if (len == 5) {
+    uint8_t lc = buf[ISO7816_APDU_LC_OFFSET_SHORT];
+    if (len == ISO7816_APDU_CASE2S_LEN) {
         out->apdu_case = ISO7816_APDU_CASE_2S;
-        out->ne = (c5 == 0) ? 256 : c5;
+        out->ne = (lc == 0) ? ISO7816_APDU_NE_256 : lc;
         return ISO7816_OK;
     }
-    if (c5 != 0x00) {
-        if (len == 5 + c5) {
+    if (lc != ISO7816_APDU_EXTENDED_MARKER) {
+        if (len == ISO7816_APDU_DATA_OFFSET_SHORT + lc) {
             out->apdu_case = ISO7816_APDU_CASE_3S;
-            out->nc = c5;
-            out->data = buf + 5;
+            out->nc = lc;
+            out->data = buf + ISO7816_APDU_DATA_OFFSET_SHORT;
             return ISO7816_OK;
         }
-        if (len == 6 + c5) {
+        if (len == ISO7816_APDU_DATA_OFFSET_SHORT + 1 + lc) {
             out->apdu_case = ISO7816_APDU_CASE_4S;
-            out->nc = c5;
-            out->data = buf + 5;
-            out->ne = (buf[5 + c5] == 0) ? 256 : buf[5 + c5];
+            out->nc = lc;
+            out->data = buf + ISO7816_APDU_DATA_OFFSET_SHORT;
+            out->ne = (buf[ISO7816_APDU_DATA_OFFSET_SHORT + lc] == 0)
+                      ? ISO7816_APDU_NE_256 : buf[ISO7816_APDU_DATA_OFFSET_SHORT + lc];
             return ISO7816_OK;
         }
         return ISO7816_APDU_INVALID;
     }
 
-    if (len < 7) return ISO7816_APDU_INVALID;
-    uint16_t c67 = (uint16_t)((buf[5] << 8) | buf[6]);
+    if (len < ISO7816_APDU_CASE2E_LEN) return ISO7816_APDU_INVALID;
+    uint16_t lc_ext = (uint16_t)((buf[ISO7816_APDU_LC_OFFSET_SHORT + 1] << 8) |
+                                 buf[ISO7816_APDU_LC_OFFSET_SHORT + 2]);
 
-    if (len == 7) {
+    if (len == ISO7816_APDU_CASE2E_LEN) {
         out->apdu_case = ISO7816_APDU_CASE_2E;
-        out->ne = (c67 == 0) ? 65536 : c67;
+        out->ne = (lc_ext == 0) ? ISO7816_APDU_NE_65536 : lc_ext;
         return ISO7816_OK;
     }
-    if (c67 != 0 && len == 7 + c67) {
+    if (lc_ext != 0 && len == ISO7816_APDU_DATA_OFFSET_EXT + lc_ext) {
         out->apdu_case = ISO7816_APDU_CASE_3E;
-        out->nc = c67;
-        out->data = buf + 7;
+        out->nc = lc_ext;
+        out->data = buf + ISO7816_APDU_DATA_OFFSET_EXT;
         return ISO7816_OK;
     }
-    if (c67 != 0 && len == 9 + c67) {
+    if (lc_ext != 0 && len == ISO7816_APDU_DATA_OFFSET_EXT + 2 + lc_ext) {
         out->apdu_case = ISO7816_APDU_CASE_4E;
-        out->nc = c67;
-        out->data = buf + 7;
-        uint16_t le = (uint16_t)((buf[7 + c67] << 8) | buf[8 + c67]);
-        out->ne = (le == 0) ? 65536 : le;
+        out->nc = lc_ext;
+        out->data = buf + ISO7816_APDU_DATA_OFFSET_EXT;
+        uint16_t le_ext = (uint16_t)((buf[ISO7816_APDU_DATA_OFFSET_EXT + lc_ext] << 8) |
+                                     buf[ISO7816_APDU_DATA_OFFSET_EXT + 1 + lc_ext]);
+        out->ne = (le_ext == 0) ? ISO7816_APDU_NE_65536 : le_ext;
         return ISO7816_OK;
     }
     return ISO7816_APDU_INVALID;
 }
 
-size_t iso7816_apdu_encode(const iso7816_apdu_cmd_t *c, uint8_t *out, size_t cap)
+size_t iso7816_apdu_encode(const iso7816_apdu_cmd_t *cmd, uint8_t *out, size_t cap)
 {
-    if (!c || !out) return 0;
-    size_t n = 0;
-    switch (c->apdu_case) {
+    if (!cmd || !out) return 0;
+    size_t out_len = 0;
+    switch (cmd->apdu_case) {
     case ISO7816_APDU_CASE_1:
-        n = 4;
+        out_len = ISO7816_APDU_CASE1_LEN;
         break;
     case ISO7816_APDU_CASE_2S:
-        n = 5;
+        out_len = ISO7816_APDU_CASE2S_LEN;
         break;
     case ISO7816_APDU_CASE_2E:
-        n = 7;
+        out_len = ISO7816_APDU_CASE2E_LEN;
         break;
     case ISO7816_APDU_CASE_3S:
-        if (c->nc > 255) return 0;
-        n = 5 + c->nc;
+        if (cmd->nc > ISO7816_APDU_NC_MAX_SHORT) return 0;
+        out_len = ISO7816_APDU_DATA_OFFSET_SHORT + cmd->nc;
         break;
     case ISO7816_APDU_CASE_3E:
-        if (c->nc > 65535 || c->nc == 0) return 0;
-        n = 7 + c->nc;
+        if (cmd->nc > ISO7816_APDU_NC_MAX_EXT || cmd->nc == 0) return 0;
+        out_len = ISO7816_APDU_DATA_OFFSET_EXT + cmd->nc;
         break;
     case ISO7816_APDU_CASE_4S:
-        if (c->nc > 255) return 0;
-        n = 6 + c->nc;
+        if (cmd->nc > ISO7816_APDU_NC_MAX_SHORT) return 0;
+        out_len = ISO7816_APDU_DATA_OFFSET_SHORT + 1 + cmd->nc;
         break;
     case ISO7816_APDU_CASE_4E:
-        if (c->nc > 65535 || c->nc == 0) return 0;
-        n = 9 + c->nc;
+        if (cmd->nc > ISO7816_APDU_NC_MAX_EXT || cmd->nc == 0) return 0;
+        out_len = ISO7816_APDU_DATA_OFFSET_EXT + 2 + cmd->nc;
         break;
     default:
         return 0;
     }
-    if (cap < n) return 0;
+    if (cap < out_len) return 0;
 
-    out[0] = c->cla;
-    out[1] = c->ins;
-    out[2] = c->p1;
-    out[3] = c->p2;
-    size_t p = 4;
-    switch (c->apdu_case) {
+    out[0] = cmd->cla;
+    out[1] = cmd->ins;
+    out[2] = cmd->p1;
+    out[3] = cmd->p2;
+    size_t pos = ISO7816_APDU_HEADER_LEN;
+    switch (cmd->apdu_case) {
     case ISO7816_APDU_CASE_1:
         break;
     case ISO7816_APDU_CASE_2S:
-        out[p++] = (uint8_t)(c->ne >= 256 ? 0 : c->ne);
+        out[pos++] = (uint8_t)(cmd->ne >= ISO7816_APDU_NE_256 ? 0 : cmd->ne);
         break;
     case ISO7816_APDU_CASE_2E:
-        out[p++] = 0x00;
-        out[p++] = (uint8_t)((c->ne & 0xFF00) >> 8);
-        out[p++] = (uint8_t)(c->ne & 0xFF);
+        out[pos++] = ISO7816_APDU_EXTENDED_MARKER;
+        out[pos++] = (uint8_t)((cmd->ne & ISO7816_BYTE_HIGH_MASK) >> 8);
+        out[pos++] = (uint8_t)(cmd->ne & ISO7816_BYTE_MASK);
         break;
     case ISO7816_APDU_CASE_3S:
-        out[p++] = (uint8_t)c->nc;
-        memcpy(out + p, c->data, c->nc);
+        out[pos++] = (uint8_t)cmd->nc;
+        memcpy(out + pos, cmd->data, cmd->nc);
         break;
     case ISO7816_APDU_CASE_3E:
-        out[p++] = 0x00;
-        out[p++] = (uint8_t)((c->nc & 0xFF00) >> 8);
-        out[p++] = (uint8_t)(c->nc & 0xFF);
-        memcpy(out + p, c->data, c->nc);
+        out[pos++] = ISO7816_APDU_EXTENDED_MARKER;
+        out[pos++] = (uint8_t)((cmd->nc & ISO7816_BYTE_HIGH_MASK) >> 8);
+        out[pos++] = (uint8_t)(cmd->nc & ISO7816_BYTE_MASK);
+        memcpy(out + pos, cmd->data, cmd->nc);
         break;
     case ISO7816_APDU_CASE_4S:
-        out[p++] = (uint8_t)c->nc;
-        memcpy(out + p, c->data, c->nc);
-        p += c->nc;
-        out[p++] = (uint8_t)(c->ne >= 256 ? 0 : c->ne);
+        out[pos++] = (uint8_t)cmd->nc;
+        memcpy(out + pos, cmd->data, cmd->nc);
+        pos += cmd->nc;
+        out[pos++] = (uint8_t)(cmd->ne >= ISO7816_APDU_NE_256 ? 0 : cmd->ne);
         break;
     case ISO7816_APDU_CASE_4E:
-        out[p++] = 0x00;
-        out[p++] = (uint8_t)((c->nc & 0xFF00) >> 8);
-        out[p++] = (uint8_t)(c->nc & 0xFF);
-        memcpy(out + p, c->data, c->nc);
-        p += c->nc;
-        out[p++] = (uint8_t)((c->ne & 0xFF00) >> 8);
-        out[p++] = (uint8_t)(c->ne & 0xFF);
+        out[pos++] = ISO7816_APDU_EXTENDED_MARKER;
+        out[pos++] = (uint8_t)((cmd->nc & ISO7816_BYTE_HIGH_MASK) >> 8);
+        out[pos++] = (uint8_t)(cmd->nc & ISO7816_BYTE_MASK);
+        memcpy(out + pos, cmd->data, cmd->nc);
+        pos += cmd->nc;
+        out[pos++] = (uint8_t)((cmd->ne & ISO7816_BYTE_HIGH_MASK) >> 8);
+        out[pos++] = (uint8_t)(cmd->ne & ISO7816_BYTE_MASK);
         break;
     }
-    return n;
+    return out_len;
 }
