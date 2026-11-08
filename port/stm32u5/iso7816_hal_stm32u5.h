@@ -1,23 +1,24 @@
-/*
- * iso7816_hal_stm32u5.h — port STM32U5 de iso7816_hal_t.
+/**
+ * @file iso7816_hal_stm32u5.h
+ * @brief STM32U5 port of iso7816_hal_t.
  *
- * Basé sur la bibliothèque SMARTCARD de la HAL STM32 (stm32u5xx_hal_smartcard.h) :
- * le USART en mode smartcard pilote la ligne I/O (broche TX, open-drain) et
- * génère l'horloge carte (broche CK) ; la trame caractère (start + 8 bits +
- * parité paire), le NACK et le guard time sont gérés par le périphérique.
+ * Based on the STM32 HAL SMARTCARD library (stm32u5xx_hal_smartcard.h):
+ * the USART in smartcard mode drives the I/O line (TX pin, open-drain) and
+ * generates the card clock (CK pin); the character frame (start + 8 bits +
+ * even parity), NACK and guard time are handled by the peripheral.
  *
- * Brochage type (à adapter dans la config) :
- *   C1 VCC : sélection de classe par 3 load-switches (EN_5V / EN_3V / EN_1V8)
- *            pilotés en GPIO
+ * Typical wiring (adapt in the config):
+ *   C1 VCC : class selection via 3 load-switches (EN_5V / EN_3V / EN_1V8)
+ *            driven as GPIO
  *   C2 RST : GPIO push-pull
- *   C3 CLK : CK du USART (AF) ; basculable en GPIO pour le clock stop (cl. 6.3.2)
- *   C5 GND : masse
- *   C7 I/O : TX du USART en mode smartcard (open-drain + pull-up externe
- *            ISO7816_PORT_IO_PULLUP_OHM vers VCC, cl. 5.2.5)
+ *   C3 CLK : USART CK (AF); switchable to GPIO for clock stop (cl. 6.3.2)
+ *   C5 GND : ground
+ *   C7 I/O : USART TX in smartcard mode (open-drain + external pull-up
+ *            ISO7816_PORT_IO_PULLUP_OHM to VCC, cl. 5.2.5)
  *
- * Base de temps µs : TIM libre cadencé à 1 MHz (ISO7816_PORT_TIME_BASE_HZ).
+ * µs time base: free-running TIM at 1 MHz (ISO7816_PORT_TIME_BASE_HZ).
  *
- * Nécessite stm32u5xx_hal_smartcard.c dans le projet (HAL STM32U5).
+ * Requires stm32u5xx_hal_smartcard.c in the project (STM32U5 HAL).
  */
 #pragma once
 
@@ -26,14 +27,14 @@
 #include "iso7816/iso7816_const.h"
 #include "iso7816/iso7816_hal.h"
 
-#include "iso7816_hal_stm32u5_const.h"   /* constantes propres au port STM32U5 */
+#include "iso7816_hal_stm32u5_const.h"   /* constants specific to the STM32U5 port */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 typedef struct {
-    /* alimentation VCC : un GPIO d'activation par classe (0 = non câblé) */
+    /* VCC supply: one enable GPIO per class (0 = not wired) */
     GPIO_TypeDef *gpio_vcc_a;  uint16_t pin_vcc_a;    /* 5 V   */
     GPIO_TypeDef *gpio_vcc_b;  uint16_t pin_vcc_b;    /* 3 V   */
     GPIO_TypeDef *gpio_vcc_c;  uint16_t pin_vcc_c;    /* 1,8 V */
@@ -49,7 +50,11 @@ typedef struct {
     TIM_HandleTypeDef *h_us;           /* base de temps 1 MHz (ex. TIM3) */
 } iso7816_hal_stm32u5_config_t;
 
-/* Remplit *hal avec les callbacks STM32U5 (smartcard) ; ctx = config interne alloué en statique. */
+/**
+ * @brief Fills *hal with the STM32U5 (smartcard) callbacks.
+ * @param cfg Port configuration (copied into a static internal context).
+ * @return Pointer to the filled HAL structure.
+ */
 const iso7816_hal_t *iso7816_hal_stm32u5(const iso7816_hal_stm32u5_config_t *cfg);
 
 #ifdef __cplusplus
