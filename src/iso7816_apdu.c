@@ -2,7 +2,7 @@
 
 #include <string.h>
 
-/* Décodage selon le tableau 13 (cl. 12.1.3). */
+/* Decoding per table 13 (cl. 12.1.3). */
 iso7816_status_t iso7816_apdu_decode(const uint8_t *buf, size_t len,
                                      iso7816_apdu_cmd_t *out)
 {

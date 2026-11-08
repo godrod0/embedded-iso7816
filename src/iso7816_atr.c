@@ -4,8 +4,8 @@
 
 #include "iso7816/iso7816_types.h"
 
-/* Nombre total d'octets attendus (T0..TCK) pour une séquence bien formée,
- * ou 0 si la séquence est tronquée/invalide. buf contient T0.. */
+/* Total number of expected bytes (T0..TCK) for a well-formed sequence,
+ * or 0 if the sequence is truncated/invalid. buf holds T0.. */
 static size_t atr_expected_len(const uint8_t *buf, size_t len)
 {
     if (len < 1 || len > ISO7816_ATR_MAX_BYTES) {
@@ -21,7 +21,7 @@ static size_t atr_expected_len(const uint8_t *buf, size_t len)
 
     while (yi != 0) {
         if (offset >= len) {
-            return 0;   /* tronqué : on ne peut pas lire TDi */
+            return 0;   /* truncated: cannot read TDi */
         }
         if (yi & ISO7816_ATR_YI_TA_BIT) offset++;
         if (yi & ISO7816_ATR_YI_TB_BIT) offset++;
@@ -39,7 +39,7 @@ static size_t atr_expected_len(const uint8_t *buf, size_t len)
             yi = 0;
         }
     }
-    /* TCK présent sauf si seul T=0 est indiqué (éventuellement par défaut) — cl. 8.2.5 */
+    /* TCK present unless only T=0 is indicated (possibly by default) — cl. 8.2.5 */
     bool tck = (!only_t0) || (has_t0 && t15);
     if (t15) tck = true;
     size_t total = offset + hist_count + (tck ? 1 : 0);
@@ -92,7 +92,7 @@ iso7816_status_t iso7816_atr_parse(iso7816_atr_t *atr, uint8_t ts,
 
     uint8_t yi = (uint8_t)(t0 >> ISO7816_ATR_YI_SHIFT);
     size_t offset = 1;
-    int group = 0;              /* 0 = premier groupe (global), puis type T courant */
+    int group = 0;              /* 0 = first group (global), then current T type */
     int current_t = -1;
     bool ta15_done = false, tb15_done = false;
     bool ta1_done = false, tc1_done = false, ta2_done = false;
@@ -133,7 +133,7 @@ iso7816_status_t iso7816_atr_parse(iso7816_atr_t *atr, uint8_t ts,
         if (yi & ISO7816_ATR_YI_TB_BIT) {
             uint8_t tb = buf[offset++];
             if (group == 0) {
-                /* TB1/TB2 dépréciés (cl. 8.3) : ignorés */
+                /* TB1/TB2 deprecated (cl. 8.3): ignored */
             } else if (current_t == ISO7816_ATR_T15 && !tb15_done) {
                 tb15_done = true;
                 atr->spu_used = (tb != 0);
@@ -163,7 +163,7 @@ iso7816_status_t iso7816_atr_parse(iso7816_atr_t *atr, uint8_t ts,
             uint8_t proto = (uint8_t)(tdi & ISO7816_ATR_TD_PROTO_MASK);
             if (proto != ISO7816_ATR_T15 && atr->n_protocols < ISO7816_ATR_PROTO_MAX) {
                 if (prev_t != ISO7816_PROTOCOL_NONE && proto <= prev_t) {
-                    return ISO7816_ATR_MALFORMED;   /* ordre croissant, cl. 8.2.3 */
+                    return ISO7816_ATR_MALFORMED;   /* increasing order, cl. 8.2.3 */
                 }
                 atr->protocols[atr->n_protocols++] = proto;
                 prev_t = proto;
@@ -185,7 +185,7 @@ iso7816_status_t iso7816_atr_parse(iso7816_atr_t *atr, uint8_t ts,
         offset += atr->k;
     }
 
-    /* TCK (cl. 8.2.5) : absent seulement si seul T=0 est indiqué (éventuellement par défaut) */
+    /* TCK (cl. 8.2.5): absent only if only T=0 is indicated (possibly by default) */
     bool only_t0 = (atr->n_protocols == 0) ||
                    (atr->n_protocols == 1 && atr->protocols[0] == 0);
     bool need_tck = !only_t0 || atr->has_t15;

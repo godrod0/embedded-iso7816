@@ -6,7 +6,7 @@
 
 static bool is_sw1(uint8_t byte)
 {
-    /* '6X' != '60' et '9X' (cl. 10.3.3) */
+    /* '6X' != '60' and '9X' (cl. 10.3.3) */
     return (byte & ISO7816_SW1_NIBBLE_MASK) == ISO7816_SW1_6X ||
            (byte & ISO7816_SW1_NIBBLE_MASK) == ISO7816_SW1_9X;
 }
@@ -39,7 +39,7 @@ static iso7816_status_t t0_tpdu(iso7816_t *dev,
 
     size_t sent = 0;
     size_t recvd = 0;
-    size_t expected_rx = p3;    /* octets de données attendus en sortie */
+    size_t expected_rx = p3;    /* expected outgoing data bytes */
 
     for (;;) {
         uint8_t proc_byte;
@@ -59,7 +59,7 @@ static iso7816_status_t t0_tpdu(iso7816_t *dev,
 
         if (proc_byte == ins || proc_byte == (uint8_t)(ins ^ ISO7816_T0_ACK_INVERT_MASK)) { /* ACK */
             if (sent < tx_len) {
-                /* commande entrante : émettre les données restantes (ou 1 seule) */
+                /* incoming command: send the remaining data (or 1 byte) */
                 if (proc_byte == ins) {
                     for (size_t i = sent; i < tx_len; i++) {
                         stat = iso7816_char_tx(dev, tx[i]);
@@ -72,11 +72,11 @@ static iso7816_status_t t0_tpdu(iso7816_t *dev,
                 }
                 continue;
             }
-            /* commande sortante : recevoir les données jusqu'à SW1-SW2
-               (le SW1 '6X'/'9X' termine les données — cas '61xx', cl. 12.2) */
+            /* outgoing command: receive data until SW1-SW2
+               (SW1 '6X'/'9X' ends the data — case '61xx', cl. 12.2) */
             for (;;) {
                 if (recvd >= expected_rx && expected_rx > 0) {
-                    /* P3 octets de données reçus : SW1-SW2 suivent */
+                    /* P3 data bytes received: SW1-SW2 follow */
                     uint8_t sw1, sw2;
                     stat = t0_rx(dev, &sw1);
                     if (stat != ISO7816_OK) return stat;
@@ -99,12 +99,12 @@ static iso7816_status_t t0_tpdu(iso7816_t *dev,
                 }
                 if (recvd >= rx_cap) return ISO7816_GEN_SIZE;
                 rx[recvd++] = byte;
-                if (proc_byte == (uint8_t)(ins ^ ISO7816_T0_ACK_INVERT_MASK)) break; /* ACK partiel : 1 seul octet */
+                if (proc_byte == (uint8_t)(ins ^ ISO7816_T0_ACK_INVERT_MASK)) break; /* partial ACK: 1 byte only */
             }
             continue;
         }
 
-        return ISO7816_T0_PROC;   /* octet de procédure invalide (cl. 10.3.3) */
+        return ISO7816_T0_PROC;   /* invalid procedure byte (cl. 10.3.3) */
     }
 }
 
@@ -119,7 +119,7 @@ iso7816_status_t iso7816_t0_exchange(iso7816_t *dev,
     iso7816_status_t stat = iso7816_apdu_decode(cmd, cmd_len, &apdu);
     if (stat != ISO7816_OK) return stat;
 
-    /* champs étendus non gérés par T=0 (ENVELOPE requis, hors périmètre) */
+    /* extended fields not handled by T=0 (ENVELOPE required, out of scope) */
     if (apdu.apdu_case == ISO7816_APDU_CASE_2E || apdu.apdu_case == ISO7816_APDU_CASE_3E ||
         apdu.apdu_case == ISO7816_APDU_CASE_4E) {
         return ISO7816_APDU_INVALID;
@@ -130,7 +130,7 @@ iso7816_status_t iso7816_t0_exchange(iso7816_t *dev,
 
     uint8_t p3;
     if (incoming) {
-        p3 = (uint8_t)apdu.nc;      /* cas 3S/4S : nc <= 255 */
+        p3 = (uint8_t)apdu.nc;      /* cases 3S/4S: nc <= 255 */
     } else if (outgoing) {
         p3 = (apdu.ne >= ISO7816_T0_NE_256) ? 0 : (uint8_t)apdu.ne;
     } else {
@@ -151,7 +151,7 @@ iso7816_status_t iso7816_t0_exchange(iso7816_t *dev,
         if (cur_sw == ISO7816_SW_OK ||
             (cur_sw & ISO7816_SW1_MASK) == (ISO7816_SW1_GET_RESPONSE << 8) ||
             (cur_sw & ISO7816_SW1_MASK) == (ISO7816_SW1_RETRANSMIT << 8)) {
-            /* '6Cxx' : réémettre la même commande avec P3 = SW2 (cl. 12.2, tableau 14) */
+            /* '6Cxx': retransmit the same command with P3 = SW2 (cl. 12.2, table 14) */
             if ((cur_sw & ISO7816_SW1_MASK) == (ISO7816_SW1_RETRANSMIT << 8)) {
                 p3 = cur_sw & ISO7816_SW2_MASK;
                 continue;
@@ -161,7 +161,7 @@ iso7816_status_t iso7816_t0_exchange(iso7816_t *dev,
         break;
     }
 
-    /* '61xx' : données restantes via GET RESPONSE (cl. 12.2) */
+    /* '61xx': remaining data via GET RESPONSE (cl. 12.2) */
     while ((cur_sw & ISO7816_SW1_MASK) == (ISO7816_SW1_GET_RESPONSE << 8)) {
         uint8_t more = cur_sw & ISO7816_SW2_MASK;       /* 0 = 256 */
         uint32_t want = apdu.ne ? apdu.ne : ISO7816_T0_NE_256;

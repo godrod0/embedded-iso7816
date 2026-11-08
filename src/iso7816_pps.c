@@ -4,7 +4,7 @@
 #include "iso7816/iso7816_types.h"
 #include "iso7816_internal.h"
 
-/* Applique les paramètres du protocole retenu (déclaré dans iso7816.c). */
+/* Applies the selected protocol parameters (declared in iso7816.c). */
 void iso7816_apply_protocol(iso7816_t *dev);
 
 static iso7816_status_t pps_rx_byte(iso7816_t *dev, uint8_t *byte, uint32_t wt_us)
@@ -13,7 +13,7 @@ static iso7816_status_t pps_rx_byte(iso7816_t *dev, uint8_t *byte, uint32_t wt_u
         iso7816_status_t stat = iso7816_char_rx(dev, byte, wt_us);
         if (stat == ISO7816_OK) return ISO7816_OK;
         if (stat == ISO7816_CHAR_WT) return stat;
-        /* PARITY : le signal d'erreur a été émis, on retente */
+        /* PARITY: the error signal was sent, retry */
     }
     return ISO7816_CHAR_PARITY;
 }
@@ -23,14 +23,14 @@ iso7816_status_t iso7816_pps_exchange(iso7816_t *dev, uint8_t protocol,
 {
     if (!dev || !dev->active) return ISO7816_GEN_STATE;
 
-    /* le protocole proposé doit être offert par la carte (cl. 9 + 8.2.3) */
+    /* the proposed protocol must be offered by the card (cl. 9 + 8.2.3) */
     bool offered = (dev->atr.n_protocols == 0 && protocol == 0);
     for (uint8_t i = 0; i < dev->atr.n_protocols; i++) {
         if (dev->atr.protocols[i] == protocol) offered = true;
     }
     if (!offered) return ISO7816_PPS_PROTOCOL;
 
-    /* F/D dans [Fd..Fi] x [Dd..Di] (cl. 9.2) */
+    /* F/D within [Fd..Fi] x [Dd..Di] (cl. 9.2) */
     if (F < ISO7816_F_DEFAULT || F > dev->atr.fi ||
         D < ISO7816_D_DEFAULT || D > dev->atr.di) {
         return ISO7816_GEN_PARAM;
@@ -70,7 +70,7 @@ iso7816_status_t iso7816_pps_exchange(iso7816_t *dev, uint8_t protocol,
             if (resp[0] != ISO7816_PPS_PPSS) return ISO7816_PPS_FAILED;
             continue;
         }
-        if (resp_len == 2) continue;   /* PPS0 reçu, on continue selon ses bits */
+        if (resp_len == 2) continue;   /* PPS0 received, continue according to its bits */
         uint8_t pps0 = resp[1];
         size_t expected = 2;
         if (pps0 & ISO7816_PPS0_PPS1_BIT) expected++;
@@ -80,12 +80,12 @@ iso7816_status_t iso7816_pps_exchange(iso7816_t *dev, uint8_t protocol,
         if (resp_len >= expected) break;
     }
 
-    /* PCK : XOR de PPSS..PCK == 0 (cl. 9.2) */
+    /* PCK: XOR of PPSS..PCK == 0 (cl. 9.2) */
     uint8_t xor_acc = 0;
     for (size_t i = 0; i < resp_len; i++) xor_acc ^= resp[i];
     if (xor_acc != 0) return ISO7816_PPS_FAILED;
 
-    /* succès : bits 1..4 de PPS0 identiques, bit 5 -> PPS1 identique ou absent (cl. 9.3) */
+    /* success: PPS0 bits 1..4 identical, bit 5 -> PPS1 identical or absent (cl. 9.3) */
     if ((resp[1] & ISO7816_PPS0_PROTO_MASK) != (req[1] & ISO7816_PPS0_PROTO_MASK)) {
         return ISO7816_PPS_FAILED;
     }

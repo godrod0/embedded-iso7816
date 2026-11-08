@@ -44,7 +44,7 @@ static iso7816_status_t t1_send_block(iso7816_t *dev, uint8_t nad, uint8_t pcb,
                                        const uint8_t *inf, uint8_t len)
 {
     if (dev->last_dir_rx) {
-        /* BGT entre le dernier caractère reçu et le premier émis (cl. 11.2) */
+        /* BGT between the last received and the first transmitted character (cl. 11.2) */
         iso7816_wait_until(dev, dev->last_rx_lead_us + ISO7816_T1_BGT_ETU * iso7816_etu_us(dev));
         dev->last_dir_rx = false;
     }
@@ -91,7 +91,7 @@ static iso7816_status_t t1_recv_block(iso7816_t *dev, iso7816_t1_block_t *block,
 {
     uint8_t byte;
     iso7816_status_t stat = t1_recv_byte(dev, &byte, timeout_us);
-    if (stat != ISO7816_OK) return stat;       /* CHAR_WT = BWT dépassé */
+    if (stat != ISO7816_OK) return stat;       /* CHAR_WT = BWT exceeded */
     block->nad = byte;
     dev->last_rx_lead_us = iso7816_now(dev);
     dev->last_dir_rx = true;
@@ -150,7 +150,7 @@ static iso7816_status_t t1_send_s(iso7816_t *dev, uint8_t s_func, bool is_respon
     return t1_send_block(dev, ISO7816_T1_NAD_DEFAULT, pcb, inf, len);
 }
 
-/* RESYNCH : max 3 tentatives (règle 6.4, cl. 11.6.3.2) */
+/* RESYNCH: max 3 attempts (rule 6.4, cl. 11.6.3.2) */
 static iso7816_status_t t1_resynch(iso7816_t *dev)
 {
     for (int attempt = 0; attempt < (int)ISO7816_T1_RESYNC_MAX; attempt++) {
@@ -169,7 +169,7 @@ static iso7816_status_t t1_resynch(iso7816_t *dev)
     return ISO7816_T1_RESYNC;
 }
 
-/* Envoie la commande APDU en I-blocs chaînés si nécessaire (bit M, cl. 11.6.2.2). */
+/* Sends the command APDU in chained I-blocks if needed (M bit, cl. 11.6.2.2). */
 static iso7816_status_t t1_send_apdu(iso7816_t *dev, const uint8_t *cmd, size_t cmd_len)
 {
     size_t offset = 0;
@@ -185,7 +185,7 @@ static iso7816_status_t t1_send_apdu(iso7816_t *dev, const uint8_t *cmd, size_t 
         dev->ns_ifd ^= 1;
         offset += chunk;
         if (more) {
-            /* acquittement R(N(R) = N(S) attendu) — règle 2.2 */
+            /* ack R(N(R) = N(S) expected) — rule 2.2 */
             iso7816_t1_block_t block;
             stat = t1_recv_block(dev, &block, t1_bwt_us(dev));
             if (stat != ISO7816_OK) return stat;
@@ -199,7 +199,7 @@ static iso7816_status_t t1_send_apdu(iso7816_t *dev, const uint8_t *cmd, size_t 
     return ISO7816_OK;
 }
 
-/* Reçoit la réponse (I-blocs jusqu'à M=0). Données accumulées dans resp. */
+/* Receives the response (I-blocks until M=0). Data accumulated in resp. */
 static iso7816_status_t t1_recv_response(iso7816_t *dev,
                                          uint8_t *resp, size_t cap, size_t *recvd,
                                          uint16_t *sw)
@@ -214,7 +214,7 @@ static iso7816_status_t t1_recv_response(iso7816_t *dev,
         iso7816_status_t stat = t1_recv_block(dev, &block, bwt_us);
 
         if (stat == ISO7816_CHAR_WT) {
-            /* BWT dépassé : R(N(R)) puis max 2 retries, sinon RESYNCH (règles 7.1/7.4) */
+            /* BWT exceeded: R(N(R)) then max 2 retries, else RESYNCH (rules 7.1/7.4) */
             if (++retries > (int)ISO7816_T1_MAX_RETRIES) {
                 iso7816_status_t stat_resynch = t1_resynch(dev);
                 return (stat_resynch == ISO7816_OK) ? ISO7816_T1_BWT : stat_resynch;
@@ -224,7 +224,7 @@ static iso7816_status_t t1_recv_response(iso7816_t *dev,
             continue;
         }
         if (stat != ISO7816_OK) {
-            /* bloc invalide : R avec code erreur EDC, max 2 retries (règle 7.1/7.4.2) */
+            /* invalid block: R with EDC error code, max 2 retries (rule 7.1/7.4.2) */
             if (++retries > (int)ISO7816_T1_MAX_RETRIES) {
                 iso7816_status_t stat_resynch = t1_resynch(dev);
                 return (stat_resynch == ISO7816_OK) ? ISO7816_T1_EDC : stat_resynch;
@@ -239,7 +239,7 @@ static iso7816_status_t t1_recv_response(iso7816_t *dev,
             uint8_t s_func = block.pcb & ISO7816_T1_PCB_FUNC_MASK;
             bool is_response = (block.pcb & ISO7816_T1_PCB_RESP_BIT) != 0;
             if (s_func == ISO7816_T1_S_WTX && !is_response) {
-                /* S(WTX request) : acquitter et étendre BWT (règle 3) */
+                /* S(WTX request): ack and extend BWT (rule 3) */
                 iso7816_status_t stat_resp = t1_send_s(dev, ISO7816_T1_S_WTX, true,
                                                         block.inf, block.inf_len);
                 if (stat_resp != ISO7816_OK) return stat_resp;
@@ -264,7 +264,7 @@ static iso7816_status_t t1_recv_response(iso7816_t *dev,
         }
 
         if (t1_is_rblock(block.pcb)) {
-            /* acquittement (ou erreur) de notre dernier bloc : on continue */
+            /* ack (or error) of our last block: continue */
             if ((block.pcb & ISO7816_T1_PCB_FUNC_MASK) != 0) return ISO7816_T1_EDC;
             continue;
         }
@@ -272,7 +272,7 @@ static iso7816_status_t t1_recv_response(iso7816_t *dev,
         if (t1_is_iblock(block.pcb)) {
             bool ns_received = (block.pcb & ISO7816_T1_PCB_NS_BIT) != 0;
             if (ns_received != (expected_ns != 0)) {
-                /* erreur de séquence : R(N(R)=attendu) code OTHER (cl. 11.3.2.2) */
+                /* sequence error: R(N(R)=expected) code OTHER (cl. 11.3.2.2) */
                 if (++retries > (int)ISO7816_T1_MAX_RETRIES) return ISO7816_T1_SEQ;
                 iso7816_status_t stat_resp = t1_send_r(dev, expected_ns, ISO7816_T1_R_ERR_OTHER);
                 if (stat_resp != ISO7816_OK) return stat_resp;
@@ -284,7 +284,7 @@ static iso7816_status_t t1_recv_response(iso7816_t *dev,
             expected_ns ^= 1;
             dev->ns_card = expected_ns;
             bool more = (block.pcb & ISO7816_T1_PCB_MORE_BIT) != 0;
-            /* acquittement du bloc reçu (règles 2.1/2.2) */
+            /* ack of the received block (rules 2.1/2.2) */
             iso7816_status_t stat_resp = t1_send_r(dev, expected_ns, 0);
             if (stat_resp != ISO7816_OK) return stat_resp;
             if (!more) break;
@@ -312,12 +312,12 @@ iso7816_status_t iso7816_t1_exchange(iso7816_t *dev,
     stat = t1_recv_response(dev, resp, resp_cap, &recvd, &cur_sw);
     if (stat != ISO7816_OK) return stat;
 
-    /* '61xx' : GET RESPONSE par T=1 (les données suivent en I-blocs chaînés) */
+    /* '61xx': GET RESPONSE over T=1 (data follows in chained I-blocks) */
     unsigned gr_count = 0;
     while ((cur_sw & ISO7816_SW1_MASK) == (ISO7816_SW1_GET_RESPONSE << 8) &&
            gr_count++ < ISO7816_T1_MAX_GET_RESPONSE) {
         uint8_t more = (uint8_t)(cur_sw & ISO7816_SW2_MASK);   /* 0 = 256 */
-        uint8_t p3 = more;                                      /* P3 = octets restants demandés */
+        uint8_t p3 = more;                                      /* P3 = requested remaining bytes */
         uint8_t get_resp[ISO7816_T0_HEADER_LEN] =
             { ISO7816_GET_RESPONSE_CLA, ISO7816_INS_GET_RESPONSE, 0x00, 0x00, p3 };
         stat = t1_send_apdu(dev, get_resp, sizeof(get_resp));

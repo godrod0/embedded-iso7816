@@ -13,10 +13,10 @@ uint32_t iso7816_gt_us(const iso7816_t *dev)
     uint32_t etu = iso7816_etu_us(dev);
     uint32_t guard_us = ISO7816_CHAR_GT_ETU * etu;
     if (dev->guard_n == ISO7816_GUARD_N_NONE || dev->guard_n == ISO7816_GUARD_N_SPECIAL) {
-        /* N=255 : GT = 12 etu en PPS et T=0 (cl. 8.3) */
+        /* N=255: GT = 12 etu in PPS and T=0 (cl. 8.3) */
         return guard_us;
     }
-    /* GT = 12 etu + R*N/f ; R = F/D, ou Fi/Di si T=15 présent (cl. 8.3) */
+    /* GT = 12 etu + R*N/f ; R = F/D, or Fi/Di if T=15 present (cl. 8.3) */
     uint64_t extra;
     if (dev->has_t15) {
         extra = ((uint64_t)dev->atr.fi * dev->guard_n * ISO7816_US_PER_SECOND) /
@@ -41,7 +41,7 @@ iso7816_status_t iso7816_char_tx(iso7816_t *dev, uint8_t byte)
         dev->last_dir_rx = false;
         if (stat == ISO7816_OK) return ISO7816_OK;
         if (stat != ISO7816_CHAR_PARITY) return stat;
-        /* PARITY : signal d'erreur reçu, on répète le caractère (cl. 7.3) */
+        /* PARITY: error signal received, repeat the character (cl. 7.3) */
     }
     return ISO7816_CHAR_PARITY;
 }
