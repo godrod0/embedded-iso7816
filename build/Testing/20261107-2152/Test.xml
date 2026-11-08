@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Site BuildName="(empty)"
+	BuildStamp="20261107-2152-Experimental"
+	Name="(empty)"
+	Generator="ctest-4.3.0"
+	CompilerName=""
+	CompilerVersion=""
+	OSName="Linux"
+	Hostname="Corentin-Fedora"
+	OSRelease="7.2.15-300.fc45.x86_64"
+	OSVersion="#1 SMP PREEMPT_DYNAMIC Sun Nov  1 16:11:16 UTC 2026"
+	OSPlatform="x86_64"
+	Is64Bits="1"
+	VendorString="AuthenticAMD"
+	VendorID="Advanced Micro Devices"
+	FamilyID="25"
+	ModelID="97"
+	ModelName="AMD Ryzen 5 7600 6-Core Processor"
+	ProcessorCacheSize="1024"
+	NumberOfLogicalCPU="12"
+	NumberOfPhysicalCPU="6"
+	TotalVirtualMemory="8191"
+	TotalPhysicalMemory="31235"
+	LogicalProcessorsPerPhysical="2"
+	ProcessorClockFrequency="5136.505859"
+	>
+	<Testing>
+		<StartDateTime>Nov 07 23:09 CET</StartDateTime>
+		<StartTestTime>1794089344</StartTestTime>
+		<TestList/>
+		<EndDateTime>Nov 07 23:09 CET</EndDateTime>
+		<EndTestTime>1794089344</EndTestTime>
+		<ElapsedMinutes>0</ElapsedMinutes>
+	</Testing>
+</Site>

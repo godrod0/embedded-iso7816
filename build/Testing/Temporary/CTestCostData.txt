@@ -1,0 +1,8 @@
+test_atr 1 0.00102788
+test_apdu 1 0.00092808
+test_char 1 0.0111149
+test_pps 1 0.0976726
+test_t0 1 0.00595751
+test_t1 1 0.0103015
+test_device 1 0.00740007
+---

@@ -1,0 +1,12 @@
+add_library(pc_card STATIC pc_card.c)
+target_link_libraries(pc_card PUBLIC iso7816)
+target_include_directories(pc_card PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(pc_card PRIVATE -Wall -Wextra)
+endif()
+
+foreach(t IN ITEMS test_atr test_apdu test_char test_pps test_t0 test_t1 test_device)
+    add_executable(${t} ${t}.c)
+    target_link_libraries(${t} PRIVATE iso7816 pc_card)
+    add_test(NAME ${t} COMMAND ${t})
+endforeach()
